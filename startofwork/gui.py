@@ -26,14 +26,16 @@ from startofwork.browser import (
     verify_login_credentials,
 )
 from startofwork.config import (
-    has_login_credentials,
+    has_app_setup,
+    is_missing_attendance_url,
     is_missing_credentials,
     load_active_hours,
     load_auto_checkout_settings,
+    normalize_attendance_url,
     parse_hhmm,
     save_active_hours,
+    save_app_setup,
     save_auto_checkout_settings,
-    save_login_credentials,
 )
 from startofwork.constants import (
     APP_TITLE,
@@ -217,19 +219,19 @@ class LockStateMonitor(tk.Tk):
         self._update_check_out_display(datetime.now())
         self._update_monitor()
 
-        if has_login_credentials():
+        if has_app_setup():
             # 시작 시 트레이로 최소화 (창 깜빡임 방지)
             self.withdraw()
             self.after_idle(self._minimize_to_tray)
             # 잠금→해제 없이 부팅/로그인만 한 경우에도 오늘 미출근이면 1회 시도
             self.after(2000, self._try_startup_check_in)
         else:
-            logging.info("로그인 설정 없음 — GUI에서 아이디/비밀번호 입력 요청")
+            logging.info("앱 설정 없음 — GUI에서 근태 URL·계정 입력 요청")
             self.after_idle(self._prompt_login_setup)
 
     def _prompt_login_setup(self) -> None:
-        """아이디/비밀번호 미설정 시 입력·검증 대화상자 표시"""
-        if has_login_credentials():
+        """최초 설정: ① 근태 URL → ② 아이디/비번 → 검증 후 저장."""
+        if has_app_setup():
             return
         if self._login_setup_dialog is not None and self._login_setup_dialog.winfo_exists():
             self._login_setup_dialog.lift()
@@ -239,12 +241,12 @@ class LockStateMonitor(tk.Tk):
         self.deiconify()
         self.lift()
         self.message_label.configure(
-            text="로그인 정보가 없습니다 — 아이디와 비밀번호를 입력하세요"
+            text="최초 설정 — 근태 페이지 주소와 로그인 정보를 입력하세요"
         )
 
         dialog = tk.Toplevel(self)
         self._login_setup_dialog = dialog
-        dialog.title("로그인 설정")
+        dialog.title("최초 설정")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
@@ -257,58 +259,148 @@ class LockStateMonitor(tk.Tk):
 
         frame = ttk.Frame(dialog, padding=(20, 18, 20, 18))
         frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+
+        step_var = tk.StringVar(value="1/2 근태 페이지 주소")
+        ttk.Label(frame, textvariable=step_var, style="Info.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 12)
+        )
+
+        # --- Step 1: URL ---
+        step1 = ttk.Frame(frame)
+        step1.grid(row=1, column=0, columnspan=2, sticky="ew")
+        step1.columnconfigure(1, weight=1)
 
         ttk.Label(
-            frame,
+            step1,
+            text="다우오피스 근태 페이지 URL을 입력하세요",
+            style="Info.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ttk.Label(step1, text="근태 URL", style="Info.TLabel").grid(
+            row=1, column=0, sticky="w", pady=6, padx=(0, 12)
+        )
+        url_var = tk.StringVar()
+        url_entry = ttk.Entry(step1, textvariable=url_var, width=42)
+        url_entry.grid(row=1, column=1, sticky="ew", pady=6)
+
+        ttk.Label(
+            step1,
+            text="예: https://회사명.daouoffice.com/ehr/app/attend/my-attendance-status",
+            style="Caption.TLabel",
+            wraplength=420,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        # --- Step 2: credentials ---
+        step2 = ttk.Frame(frame)
+        step2.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            step2,
             text="다우오피스 로그인 정보를 입력하세요",
             style="Info.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
-        ttk.Label(frame, text="아이디", style="Info.TLabel").grid(
+        ttk.Label(step2, text="아이디", style="Info.TLabel").grid(
             row=1, column=0, sticky="w", pady=6, padx=(0, 12)
         )
         username_var = tk.StringVar()
-        username_entry = ttk.Entry(frame, textvariable=username_var, width=28)
+        username_entry = ttk.Entry(step2, textvariable=username_var, width=28)
         username_entry.grid(row=1, column=1, sticky="ew", pady=6)
 
-        ttk.Label(frame, text="비밀번호", style="Info.TLabel").grid(
+        ttk.Label(step2, text="비밀번호", style="Info.TLabel").grid(
             row=2, column=0, sticky="w", pady=6, padx=(0, 12)
         )
         password_var = tk.StringVar()
         password_entry = ttk.Entry(
-            frame, textvariable=password_var, width=28, show="*"
+            step2, textvariable=password_var, width=28, show="*"
         )
         password_entry.grid(row=2, column=1, sticky="ew", pady=6)
 
         status_var = tk.StringVar(
-            value="확인 버튼을 누르면 로그인 후 근태 페이지를 검증합니다."
+            value="다음을 누른 뒤 아이디/비밀번호를 입력하고 확인하면 검증·저장합니다."
         )
         status_label = ttk.Label(
             frame,
             textvariable=status_var,
             style="Caption.TLabel",
-            wraplength=360,
+            wraplength=420,
             justify="left",
         )
-        status_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 12))
+        status_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 12))
 
         button_row = ttk.Frame(frame)
-        button_row.grid(row=4, column=0, columnspan=2, sticky="e")
+        button_row.grid(row=3, column=0, columnspan=2, sticky="e")
 
+        back_button = ttk.Button(button_row, text="이전")
+        next_button = ttk.Button(button_row, text="다음")
         verify_button = ttk.Button(button_row, text="확인 및 저장")
+
+        current_step = {"n": 1}
+        pending_url = {"value": ""}
+
+        def _show_step(step: int) -> None:
+            current_step["n"] = step
+            if step == 1:
+                step_var.set("1/2 근태 페이지 주소")
+                step2.grid_remove()
+                step1.grid(row=1, column=0, columnspan=2, sticky="ew")
+                back_button.pack_forget()
+                verify_button.pack_forget()
+                next_button.pack(side="right")
+                status_var.set("근태 페이지 전체 주소를 입력한 뒤 다음을 누르세요.")
+                url_entry.focus_set()
+            else:
+                step_var.set("2/2 로그인 정보")
+                step1.grid_remove()
+                step2.grid(row=1, column=0, columnspan=2, sticky="ew")
+                next_button.pack_forget()
+                back_button.pack(side="right", padx=(0, 8))
+                verify_button.pack(side="right")
+                status_var.set(
+                    "확인 버튼을 누르면 입력한 URL로 로그인·근태 페이지를 검증합니다."
+                )
+                username_entry.focus_set()
 
         def _set_busy(busy: bool) -> None:
             self._login_verifying = busy
             state = "disabled" if busy else "normal"
+            url_entry.configure(state=state)
             username_entry.configure(state=state)
             password_entry.configure(state=state)
+            next_button.configure(state=state)
+            back_button.configure(state=state)
             verify_button.configure(state=state)
+
+        def _on_next() -> None:
+            if self._login_verifying:
+                return
+            url = normalize_attendance_url(url_var.get())
+            if is_missing_attendance_url(url):
+                status_var.set("근태 URL을 http:// 또는 https:// 로 시작하는 주소로 입력하세요.")
+                url_entry.focus_set()
+                return
+            pending_url["value"] = url
+            _show_step(2)
+
+        def _on_back() -> None:
+            if self._login_verifying:
+                return
+            _show_step(1)
 
         def _on_verify() -> None:
             if self._login_verifying:
                 return
+            attendance_url = pending_url["value"] or normalize_attendance_url(
+                url_var.get()
+            )
             username = username_var.get().strip()
             password = password_var.get().strip()
+            if is_missing_attendance_url(attendance_url):
+                status_var.set("근태 URL이 없습니다. 이전 단계에서 다시 입력하세요.")
+                _show_step(1)
+                return
             if is_missing_credentials(username, password):
                 status_var.set("아이디와 비밀번호를 모두 입력하세요.")
                 return
@@ -318,8 +410,17 @@ class LockStateMonitor(tk.Tk):
             dialog.update_idletasks()
 
             def _worker() -> None:
-                ok, message = verify_login_credentials(username, password)
-                self.after(0, lambda: _on_verify_done(ok, message, username, password))
+                ok, message = verify_login_credentials(
+                    username,
+                    password,
+                    attendance_url=attendance_url,
+                )
+                self.after(
+                    0,
+                    lambda: _on_verify_done(
+                        ok, message, attendance_url, username, password
+                    ),
+                )
 
             threading.Thread(
                 target=_worker,
@@ -328,7 +429,11 @@ class LockStateMonitor(tk.Tk):
             ).start()
 
         def _on_verify_done(
-            ok: bool, message: str, username: str, password: str
+            ok: bool,
+            message: str,
+            attendance_url: str,
+            username: str,
+            password: str,
         ) -> None:
             if not dialog.winfo_exists():
                 self._login_verifying = False
@@ -342,16 +447,16 @@ class LockStateMonitor(tk.Tk):
                 return
 
             try:
-                save_login_credentials(username, password)
+                save_app_setup(attendance_url, username, password)
             except Exception:
-                logging.exception("로그인 설정 저장 실패")
+                logging.exception("앱 설정 저장 실패")
                 _set_busy(False)
                 status_var.set("로그인은 확인되었지만 설정 저장에 실패했습니다.")
                 return
 
             status_var.set(message)
-            self.message_label.configure(text="로그인 설정이 저장되었습니다")
-            logging.info("GUI 로그인 설정 완료")
+            self.message_label.configure(text="최초 설정이 저장되었습니다")
+            logging.info("GUI 최초 설정 완료")
             dialog.grab_release()
             dialog.destroy()
             self._login_setup_dialog = None
@@ -359,24 +464,31 @@ class LockStateMonitor(tk.Tk):
             self.after(300, self._minimize_to_tray)
             self.after(2000, self._try_startup_check_in)
 
+        next_button.configure(command=_on_next)
+        back_button.configure(command=_on_back)
         verify_button.configure(command=_on_verify)
-        verify_button.pack(side="right")
 
         def _on_dialog_close() -> None:
             if self._login_verifying:
                 status_var.set("로그인 확인 중입니다. 잠시만 기다려 주세요.")
                 return
-            # 설정 없이는 자동화가 불가하므로 앱 종료
-            logging.info("로그인 설정 취소 — 프로그램 종료")
+            logging.info("최초 설정 취소 — 프로그램 종료")
             dialog.grab_release()
             dialog.destroy()
             self._login_setup_dialog = None
             self._quit_application()
 
         dialog.protocol("WM_DELETE_WINDOW", _on_dialog_close)
-        dialog.bind("<Return>", lambda _e: _on_verify())
 
-        frame.columnconfigure(1, weight=1)
+        def _on_return(_event=None) -> None:
+            if current_step["n"] == 1:
+                _on_next()
+            else:
+                _on_verify()
+
+        dialog.bind("<Return>", _on_return)
+
+        _show_step(1)
         dialog.update_idletasks()
         width = dialog.winfo_reqwidth()
         height = dialog.winfo_reqheight()
@@ -388,8 +500,7 @@ class LockStateMonitor(tk.Tk):
         y = parent_y + max((parent_h - height) // 2, 0)
         dialog.geometry(f"+{x}+{y}")
 
-        username_entry.focus_set()
-
+        url_entry.focus_set()
     def _apply_window_icon(self) -> None:
         """윈도우 창/작업표시줄 아이콘 설정"""
         if not APP_ICON_FILE.is_file():
@@ -1082,9 +1193,9 @@ class LockStateMonitor(tk.Tk):
         trigger: str,
     ) -> Optional[str]:
         """조건 충족 시 출근 작업을 시작하고 GUI용 메시지를 반환."""
-        if not has_login_credentials():
+        if not has_app_setup():
             self.after(0, self._prompt_login_setup)
-            return "로그인 설정 필요 — 아이디/비밀번호를 입력하세요"
+            return "최초 설정 필요 — 근태 URL과 아이디/비밀번호를 입력하세요"
 
         allowed, reason = should_open_browser(now)
         if not allowed:
@@ -1110,8 +1221,8 @@ class LockStateMonitor(tk.Tk):
             return
         self._startup_check_in_attempted = True
 
-        if not has_login_credentials():
-            logging.info("시작 시 출근 생략 — 로그인 설정 없음")
+        if not has_app_setup():
+            logging.info("시작 시 출근 생략 — 앱 설정 없음")
             return
 
         now = datetime.now()
@@ -1152,8 +1263,8 @@ class LockStateMonitor(tk.Tk):
 
         self._active_start_check_in_date = now.date()
 
-        if not has_login_credentials():
-            logging.info("업무시간 시작 출근 생략 — 로그인 설정 없음")
+        if not has_app_setup():
+            logging.info("업무시간 시작 출근 생략 — 앱 설정 없음")
             return None
 
         state = (

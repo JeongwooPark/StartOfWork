@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$AppVersion = "1.1.3"
+$AppVersion = "1.1.4"
 $VersionedExeName = "StartOfWork-$AppVersion.exe"
 $VersionedSetupName = "StartOfWorkSetup-$AppVersion.exe"
 

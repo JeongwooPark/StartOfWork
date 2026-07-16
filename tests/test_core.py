@@ -34,6 +34,7 @@ class TestConfigCredentials(unittest.TestCase):
 
     def test_save_and_load_credentials(self) -> None:
         from startofwork import config
+        from startofwork.constants import DEFAULT_ATTENDANCE_URL
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "config.json"
@@ -41,17 +42,64 @@ class TestConfigCredentials(unittest.TestCase):
                 config.clear_config_cache()
                 data = config.ensure_app_config()
                 self.assertEqual(data["username"], "")
+                self.assertEqual(data["attendance_url"], "")
                 self.assertFalse(config.has_login_credentials())
+                self.assertFalse(config.has_app_setup())
 
-                config.save_login_credentials("alice", "secret")
+                config.save_app_setup(
+                    DEFAULT_ATTENDANCE_URL, "alice", "secret"
+                )
                 self.assertTrue(config.has_login_credentials())
+                self.assertTrue(config.has_app_setup())
                 user, pw = config.load_login_credentials()
                 self.assertEqual((user, pw), ("alice", "secret"))
+                self.assertEqual(
+                    config.load_attendance_url(), DEFAULT_ATTENDANCE_URL
+                )
 
                 loaded = json.loads(cfg.read_text(encoding="utf-8"))
                 self.assertEqual(loaded["username"], "alice")
+                self.assertEqual(loaded["attendance_url"], DEFAULT_ATTENDANCE_URL)
                 self.assertIn("auto_checkout_time", loaded)
                 self.assertIn("active_start_time", loaded)
+
+    def test_missing_attendance_url(self) -> None:
+        from startofwork.config import is_missing_attendance_url
+
+        self.assertTrue(is_missing_attendance_url(""))
+        self.assertTrue(is_missing_attendance_url("ftp://example.com"))
+        self.assertTrue(is_missing_attendance_url("example.com/path"))
+        self.assertFalse(
+            is_missing_attendance_url("https://acme.daouoffice.com/ehr/x")
+        )
+        self.assertFalse(is_missing_attendance_url("http://localhost/attend"))
+
+    def test_migrate_legacy_config_fills_default_url(self) -> None:
+        from startofwork import config
+        from startofwork.constants import DEFAULT_ATTENDANCE_URL
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(
+                json.dumps(
+                    {
+                        "username": "bob",
+                        "password": "pw",
+                        "active_start_time": "08:30",
+                        "active_end_time": "18:00",
+                        "auto_checkout_enabled": False,
+                        "auto_checkout_time": "18:00",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(config, "CONFIG_FILE", cfg):
+                config.clear_config_cache()
+                data = config.ensure_app_config()
+                self.assertEqual(data["attendance_url"], DEFAULT_ATTENDANCE_URL)
+                self.assertTrue(config.has_app_setup())
 
     def test_active_hours_save_load(self) -> None:
         from startofwork import config
@@ -210,7 +258,7 @@ class TestStartupCheckIn(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_non_workday_reason", return_value=None
         ), mock.patch(
@@ -250,7 +298,7 @@ class TestStartupCheckIn(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_windows_lock_state", return_value=True
         ), mock.patch(
@@ -282,7 +330,7 @@ class TestActiveHoursStartCheckIn(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_windows_lock_state", return_value=False
         ), mock.patch(
@@ -443,7 +491,7 @@ class TestAutoCheckoutTrigger(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_non_workday_reason", return_value=None
         ), mock.patch(
@@ -518,7 +566,7 @@ class TestCloseDialog(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_non_workday_reason", return_value=None
         ), mock.patch(
@@ -555,7 +603,7 @@ class TestCloseDialog(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_non_workday_reason", return_value=None
         ), mock.patch(
@@ -706,8 +754,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(app, "main"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.1.3")
-        self.assertEqual(startofwork.__version__, "1.1.3")
+        self.assertEqual(constants.APP_VERSION, "1.1.4")
+        self.assertEqual(startofwork.__version__, "1.1.4")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)
@@ -722,7 +770,7 @@ class TestImportsSmoke(unittest.TestCase):
         from startofwork.gui import LockStateMonitor
 
         with mock.patch(
-            "startofwork.gui.has_login_credentials", return_value=True
+            "startofwork.gui.has_app_setup", return_value=True
         ), mock.patch(
             "startofwork.gui.get_non_workday_reason", return_value=None
         ), mock.patch(

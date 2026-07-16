@@ -10,11 +10,13 @@ from typing import Optional
 from startofwork.constants import (
     DEFAULT_ACTIVE_END_TIME,
     DEFAULT_ACTIVE_START_TIME,
+    DEFAULT_ATTENDANCE_URL,
     DEFAULT_AUTO_CHECKOUT_TIME,
 )
 from startofwork.paths import CONFIG_FILE
 
 _DEFAULT_CONFIG = {
+    "attendance_url": "",
     "username": "",
     "password": "",
     "active_start_time": "08:30",
@@ -40,6 +42,18 @@ def clear_config_cache() -> None:
 
 def normalize_credential(value: object) -> str:
     return str(value or "").strip()
+
+
+def normalize_attendance_url(value: object) -> str:
+    return str(value or "").strip()
+
+
+def is_missing_attendance_url(url: str) -> bool:
+    text = normalize_attendance_url(url)
+    if not text:
+        return True
+    lower = text.lower()
+    return not (lower.startswith("http://") or lower.startswith("https://"))
 
 
 def is_missing_credentials(username: str, password: str) -> bool:
@@ -115,17 +129,46 @@ def ensure_app_config() -> dict:
 
     changed = False
     for key, value in _DEFAULT_CONFIG.items():
-        if key in ("username", "password"):
+        if key in ("username", "password", "attendance_url"):
             continue
         if key not in data:
             data[key] = value
             changed = True
+
+    # 1.1.3 이하: attendance_url 키 없음 + 계정 있음 → 기본 URL로 마이그레이션
+    if "attendance_url" not in data:
+        username = normalize_credential(data.get("username", ""))
+        password = str(data.get("password", "")).strip()
+        if not is_missing_credentials(username, password):
+            data["attendance_url"] = DEFAULT_ATTENDANCE_URL
+        else:
+            data["attendance_url"] = ""
+        changed = True
+
     if changed:
         try:
             save_app_config(data)
         except Exception:
             logging.exception("설정 기본값 보강 저장 실패")
     return data
+
+
+def load_attendance_url() -> str:
+    data = load_app_config()
+    url = normalize_attendance_url(data.get("attendance_url", ""))
+    if is_missing_attendance_url(url):
+        raise ValueError(
+            f"설정 파일에 attendance_url이 필요합니다: {CONFIG_FILE}"
+        )
+    return url
+
+
+def has_attendance_url() -> bool:
+    try:
+        load_attendance_url()
+        return True
+    except Exception:
+        return False
 
 
 def load_login_credentials() -> tuple[str, str]:
@@ -147,6 +190,11 @@ def has_login_credentials() -> bool:
         return False
 
 
+def has_app_setup() -> bool:
+    """근태 URL + 로그인 계정이 모두 있으면 True."""
+    return has_attendance_url() and has_login_credentials()
+
+
 def save_login_credentials(username: str, password: str) -> None:
     username = normalize_credential(username)
     password = str(password or "").strip()
@@ -162,6 +210,33 @@ def save_login_credentials(username: str, password: str) -> None:
         data.setdefault(key, value)
     save_app_config(data)
     logging.info("로그인 설정 저장 완료: user=%s file=%s", username, CONFIG_FILE)
+
+
+def save_app_setup(attendance_url: str, username: str, password: str) -> None:
+    """최초 설정: 근태 URL + 계정을 검증 후 한 번에 저장."""
+    attendance_url = normalize_attendance_url(attendance_url)
+    username = normalize_credential(username)
+    password = str(password or "").strip()
+    if is_missing_attendance_url(attendance_url):
+        raise ValueError("근태 페이지 URL을 http(s):// 형식으로 입력하세요")
+    if is_missing_credentials(username, password):
+        raise ValueError("아이디와 비밀번호를 입력하세요")
+
+    data = ensure_app_config()
+    data["attendance_url"] = attendance_url
+    data["username"] = username
+    data["password"] = password
+    for key, value in _DEFAULT_CONFIG.items():
+        if key in ("username", "password", "attendance_url"):
+            continue
+        data.setdefault(key, value)
+    save_app_config(data)
+    logging.info(
+        "앱 설정 저장 완료: user=%s url=%s file=%s",
+        username,
+        attendance_url,
+        CONFIG_FILE,
+    )
 
 
 def parse_hhmm(

@@ -25,10 +25,13 @@ from startofwork.attendance_state import (
     save_check_in_date,
     save_check_out_date,
 )
-from startofwork.config import has_login_credentials, load_login_credentials
+from startofwork.config import (
+    has_app_setup,
+    load_attendance_url,
+    load_login_credentials,
+)
 from startofwork.constants import (
     ATTENDANCE_PAGE_WAIT_SEC,
-    ATTENDANCE_URL,
     CHECK_IN_BUTTON_XPATH,
     CHECK_IN_RENDER_WAIT_SEC,
     CHECK_OUT_BUTTON_XPATH,
@@ -188,14 +191,30 @@ def find_button_by_xpaths(
     return None
 
 
-def wait_for_attendance_url(driver: webdriver.Chrome) -> bool:
-    if "my-attendance-status" not in driver.current_url:
+def wait_for_attendance_url(
+    driver: webdriver.Chrome,
+    attendance_url: Optional[str] = None,
+) -> bool:
+    try:
+        target = (attendance_url or load_attendance_url()).strip()
+    except Exception:
+        logging.exception("근태 URL 로드 실패")
+        return False
+
+    current = driver.current_url or ""
+    on_target = target.rstrip("/") in current.rstrip("/") or (
+        "my-attendance-status" in current and "/login" not in current
+    )
+    if not on_target:
         logging.info("근태 화면으로 이동 중...")
-        driver.get(ATTENDANCE_URL)
+        driver.get(target)
     try:
         WebDriverWait(driver, ATTENDANCE_PAGE_WAIT_SEC).until(
-            lambda d: "my-attendance-status" in d.current_url
-            and "/login" not in d.current_url
+            lambda d: "/login" not in (d.current_url or "")
+            and (
+                target.rstrip("/") in (d.current_url or "").rstrip("/")
+                or "my-attendance-status" in (d.current_url or "")
+            )
         )
         return True
     except TimeoutException:
@@ -362,8 +381,11 @@ def login_if_needed(
         return False
 
 
-def wait_for_attendance_buttons(driver: webdriver.Chrome) -> bool:
-    if not wait_for_attendance_url(driver):
+def wait_for_attendance_buttons(
+    driver: webdriver.Chrome,
+    attendance_url: Optional[str] = None,
+) -> bool:
+    if not wait_for_attendance_url(driver, attendance_url=attendance_url):
         return False
     logging.info("근태 URL 도착 — 출근/퇴근 버튼 렌더 대기")
     try:
@@ -397,13 +419,16 @@ def _run_with_driver(worker) -> None:
 
     driver: Optional[webdriver.Chrome] = None
     try:
+        attendance_url = load_attendance_url()
         driver = webdriver.Chrome(
             service=ChromeService(),
             options=create_chrome_options(chrome),
         )
         _active_drivers.append(driver)
-        driver.get(ATTENDANCE_URL)
+        driver.get(attendance_url)
         worker(driver)
+    except ValueError:
+        logging.exception("근태 URL/설정 로드 실패")
     except WebDriverException:
         logging.exception("근태 작업 중 WebDriver 오류")
     except Exception:
@@ -434,8 +459,8 @@ def _auto_checkout_worker(_chrome: Path | None = None) -> None:
 
 
 def open_attendance_page() -> bool:
-    if not has_login_credentials():
-        logging.warning("로그인 설정 없음 — 웹창 실행 생략")
+    if not has_app_setup():
+        logging.warning("앱 설정 없음 — 웹창 실행 생략")
         return False
 
     allowed, reason = should_open_browser()
@@ -447,20 +472,26 @@ def open_attendance_page() -> bool:
         logging.error("Chrome 실행 파일을 찾을 수 없음")
         return False
 
+    try:
+        attendance_url = load_attendance_url()
+    except Exception:
+        logging.exception("근태 URL 로드 실패")
+        return False
+
     threading.Thread(
         target=_auto_login_worker,
         name="auto-login",
         daemon=True,
     ).start()
-    logging.info("근태 페이지 자동 로그인 시작: %s", ATTENDANCE_URL)
+    logging.info("근태 페이지 자동 로그인 시작: %s", attendance_url)
     return True
 
 
 def open_checkout_page() -> bool:
     global _checkout_job_running
 
-    if not has_login_credentials():
-        logging.warning("로그인 설정 없음 — 자동 퇴근 생략")
+    if not has_app_setup():
+        logging.warning("앱 설정 없음 — 자동 퇴근 생략")
         return False
 
     if find_chrome_executable() is None:
@@ -469,6 +500,12 @@ def open_checkout_page() -> bool:
 
     if _checkout_job_running:
         logging.info("자동 퇴근 작업이 이미 진행 중")
+        return False
+
+    try:
+        attendance_url = load_attendance_url()
+    except Exception:
+        logging.exception("근태 URL 로드 실패")
         return False
 
     _checkout_job_running = True
@@ -481,17 +518,37 @@ def open_checkout_page() -> bool:
             _checkout_job_running = False
 
     threading.Thread(target=_runner, name="auto-checkout", daemon=True).start()
-    logging.info("자동 퇴근 시작: %s", ATTENDANCE_URL)
+    logging.info("자동 퇴근 시작: %s", attendance_url)
     return True
 
 
-def verify_login_credentials(username: str, password: str) -> tuple[bool, str]:
-    from startofwork.config import is_missing_credentials, normalize_credential
+def verify_login_credentials(
+    username: str,
+    password: str,
+    *,
+    attendance_url: Optional[str] = None,
+) -> tuple[bool, str]:
+    from startofwork.config import (
+        is_missing_attendance_url,
+        is_missing_credentials,
+        normalize_attendance_url,
+        normalize_credential,
+    )
 
     username = normalize_credential(username)
     password = str(password or "").strip()
     if is_missing_credentials(username, password):
         return False, "아이디와 비밀번호를 입력하세요"
+
+    if attendance_url is None:
+        try:
+            target_url = load_attendance_url()
+        except Exception:
+            return False, "근태 페이지 URL이 설정되어 있지 않습니다."
+    else:
+        target_url = normalize_attendance_url(attendance_url)
+        if is_missing_attendance_url(target_url):
+            return False, "근태 페이지 URL을 http(s):// 형식으로 입력하세요."
 
     chrome = find_chrome_executable()
     if chrome is None:
@@ -507,10 +564,10 @@ def verify_login_credentials(username: str, password: str) -> tuple[bool, str]:
             options=create_chrome_options(chrome),
         )
         _active_drivers.append(driver)
-        driver.get(ATTENDANCE_URL)
+        driver.get(target_url)
         if not login_if_needed(driver, username=username, password=password):
             return False, "로그인에 실패했습니다. 아이디/비밀번호를 확인하세요."
-        if not wait_for_attendance_buttons(driver):
+        if not wait_for_attendance_buttons(driver, attendance_url=target_url):
             return (
                 False,
                 "로그인은 되었지만 근태 페이지(출근/퇴근 버튼)를 확인할 수 없습니다.",

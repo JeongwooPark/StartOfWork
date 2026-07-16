@@ -1,11 +1,11 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.1.3
+# 출근 근태 자동 실행 (StartOfWork) v1.1.4
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.1.3
+**버전:** 1.1.4
 
-> **배포 라인:** 1.1.3은 **최종 수동 배포(old) 버전**입니다. 자동 업데이트는 없습니다.  
+> **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다. 자동 업데이트는 없습니다.  
 > 1.2.0부터 GitHub Releases 기반 업데이트를 사용할 예정입니다.
 
 ## 주요 기능
@@ -20,7 +20,7 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 - **업무시간 설정**: `config.json` / GUI에서 시작·종료 시각 변경 가능 (기본 `08:30`~`18:00`)
 - **공휴일 판별**: [한국천문연구원 특일정보 Open API](https://www.data.go.kr/data/15012690/openapi.do) (매일 확인, 내용 변경 시에만 캐시 갱신)
 - **주말/공휴일 제외**: 토·일·공휴일에는 출근·퇴근 자동화 생략
-- **최초 계정 설정**: `username`/`password`가 없으면 GUI에서 입력 → 로그인·근태 페이지(출근/퇴근 버튼) 검증 후 `config.json` 저장
+- **최초 설정**: 설치 후 첫 실행 시 **① 근태 페이지 URL → ② 아이디/비밀번호 → 로그인·근태 페이지 검증 후 저장**
 - **시스템 트레이**: 시작 시 트레이로 최소화, 툴팁에 출근체크 상태 표시
 - **완료 알림**: 출근/퇴근 처리 성공 시 시스템 트레이 알림 표시
 - **중복 실행 방지**: 이미 실행 중이면 경고 후 추가 인스턴스를 시작하지 않음
@@ -40,19 +40,19 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.1.3.exe`
+결과물: `dist\StartOfWorkSetup-1.1.4.exe`
 
 | 항목 | 내용 |
 |------|------|
 | 설치 경로 | `%LOCALAPPDATA%\StartOfWork` (관리자 권한 불필요) |
 | 시작프로그램 | 설치 시 **항상** 등록 (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) |
 | 사용 설명서 | `README.md`를 설치 폴더에 포함 (시작 메뉴에도 바로가기) |
-| 설정 파일 | 최초 설치 시 빈 계정 `config.json` 생성. **재설치 시 기존 설정은 덮어쓰지 않음** |
-| 계정 입력 | **설치 과정에서는 생략**. 첫 실행 시 프로그램 GUI에서 아이디/비밀번호 입력·검증 |
+| 설정 파일 | 최초 설치 시 빈 `config.json` 생성. **재설치 시 기존 설정은 덮어쓰지 않음** |
+| 계정·URL 입력 | **설치 과정에서는 생략**. 첫 실행 시 GUI에서 근태 URL → 아이디/비밀번호 입력·검증 |
 | 설치 후 실행 | 설치 마법사가 앱을 자동 실행하지 않음(Smart App Control 차단 방지). **시작 메뉴** 또는 설치 폴더의 `StartOfWork.exe`를 직접 실행 |
 | 제거 | Windows 설정 → 앱 → StartOfWork (시작프로그램 등록도 함께 해제) |
 
-설치 직후 실행하면, 계정이 비어 있을 때 GUI에서 로그인 정보를 받습니다.
+설치 직후 실행하면, 설정이 비어 있을 때 GUI에서 근태 주소와 로그인 정보를 순서대로 받습니다.
 
 ## 실행 파일만 빌드
 
@@ -60,7 +60,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.1.3.exe` (약 29MB).  
+결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.1.4.exe` (약 29MB).  
 `config.json`, `StartOfWork.ico`를 exe와 **같은 폴더**에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -86,6 +86,7 @@ uv run python main.py
 
 ```json
 {
+  "attendance_url": "",
   "username": "",
   "password": "",
   "active_start_time": "08:30",
@@ -97,6 +98,7 @@ uv run python main.py
 
 | 항목 | 설명 |
 |------|------|
+| `attendance_url` | 다우오피스 근태 페이지 전체 URL (`https://…/my-attendance-status`) |
 | `username` | 다우오피스 로그인 아이디 |
 | `password` | 다우오피스 로그인 비밀번호 |
 | `active_start_time` | 출근 자동화 시작 시각 (`HH:MM`, 기본 `08:30`) |
@@ -105,8 +107,15 @@ uv run python main.py
 | `auto_checkout_time` | 자동 퇴근 시각 (`HH:MM`, 기본 `18:00`) |
 
 - GUI의 **업무시간**, **자동 퇴근 활성화**, **퇴근 시각**은 변경 즉시 저장됩니다.
+- 구버전(1.1.3 이하) config에 `attendance_url`이 없고 계정만 있으면, 기존 기본 URL로 자동 보강됩니다.
 - 구버전 config에 업무시간 키가 없으면 `08:30`/`18:00`으로 자동 보강됩니다.
 - 업무시간 시작 > 종료처럼 잘못된 값이면 기본값으로 되돌립니다.
+
+### 최초 설정 순서
+
+1. **근태 URL** 입력 후 다음
+2. **아이디/비밀번호** 입력
+3. **확인 및 저장** → 해당 URL로 로그인·근태 버튼 검증 후 `config.json`에 저장
 
 ### 로그인 성공/실패 판정 (GUI 검증 시)
 
@@ -198,6 +207,13 @@ winget install JRSoftware.InnoSetup
 
 ## 패치 노트
 
+### v1.1.4
+
+- 다우오피스 근태 페이지 URL을 `config.json`의 `attendance_url`로 분리
+- 설치 후 최초 실행: **URL → 아이디/비밀번호 → 검증·저장** 2단계 설정
+- 1.1.3 이하 config(계정만 있음)는 기존 기본 URL로 자동 마이그레이션
+- 산출물: `StartOfWork-1.1.4.exe`, `StartOfWorkSetup-1.1.4.exe`
+
 ### v1.1.3
 
 - GUI 정리: 상단 날짜·시간 표시·「현재 세션 상태」캡션 제거, 「오늘 공휴일」→「공휴일 유무」
@@ -248,7 +264,7 @@ winget install JRSoftware.InnoSetup
 
 ## 참고
 
-- 대상 URL: `https://smartplanning.daouoffice.com/ehr/app/attend/my-attendance-status`
+- 대상 URL: `config.json`의 `attendance_url` (최초 실행 시 입력)
 - 공휴일 API Decoding 키는 소스에 포함되어 있으며 `requests`로 호출합니다.
 - Chrome은 출근/퇴근 모두 **headless**로 동작합니다 (창이 보이지 않음).
 - 코드 서명이 없으면 Windows 11 스마트 앱 컨트롤이 Setup의 자동 실행을 막을 수 있습니다. 설치 폴더의 exe를 직접 실행하세요.

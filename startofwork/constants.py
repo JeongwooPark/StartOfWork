@@ -2,7 +2,7 @@
 
 from datetime import time as dt_time
 
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 APP_TITLE = "출근 근태 자동 실행"
 # 폴링: 활성(출근/퇴근 임박)·대기·한산 구간
 CHECK_INTERVAL_MS = 1000
@@ -10,7 +10,8 @@ CHECK_INTERVAL_IDLE_MS = 5000
 CHECK_INTERVAL_QUIET_MS = 15000
 POLL_BOUNDARY_WINDOW_SEC = 120
 
-ATTENDANCE_URL = (
+# 1.1.3 이하·구 config 마이그레이션용 기본 근태 URL (신규 설치는 빈 값으로 최초 입력)
+DEFAULT_ATTENDANCE_URL = (
     "https://smartplanning.daouoffice.com/ehr/app/attend/my-attendance-status"
 )
 CHECK_IN_BUTTON_XPATH = (
