@@ -333,20 +333,45 @@ def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> N
     )
     ps1_path.write_text(script + "\n", encoding="utf-8")
 
-    # cmd start 로 부모 Job에서 분리 — 앱 종료 시 업데이트 프로세스가 죽지 않도록
-    # title 빈 문자열이 아니라 제목을 줘야 /min 이 명령으로 해석됨
-    launch_cmd = (
-        'start "StartOfWorkUpdate" /min '
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass "
-        f'-File "{ps1_path}"'
+    # cmd `start "Title"` 는 환경에 따라 Title을 실행 경로로 오인할 수 있음
+    # (오류: '\StartOfWorkUpdate\'을(를) 찾을 수 없습니다)
+    # PowerShell Start-Process 로 완전 분리 기동한다.
+    CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    DETACHED_PROCESS = 0x00000008
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    creationflags = (
+        CREATE_NO_WINDOW
+        | CREATE_NEW_PROCESS_GROUP
+        | DETACHED_PROCESS
+        | CREATE_BREAKAWAY_FROM_JOB
     )
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+    # 바깥 PowerShell이 즉시 반환되도록 Start-Process만 호출
+    outer = (
+        "Start-Process -FilePath 'powershell.exe' "
+        "-ArgumentList @("
+        "'-NoProfile',"
+        "'-ExecutionPolicy',"
+        "'Bypass',"
+        "'-WindowStyle',"
+        "'Hidden',"
+        "'-File',"
+        f"{_ps_single_quote(str(ps1_path))}"
+        ") -WindowStyle Hidden"
+    )
     subprocess.Popen(
-        ["cmd.exe", "/c", launch_cmd],
-        creationflags=creationflags,
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            outer,
+        ],
+        creationflags=creationflags if sys.platform == "win32" else 0,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

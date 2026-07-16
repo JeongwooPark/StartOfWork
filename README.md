@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.3
+# 출근 근태 자동 실행 (StartOfWork) v1.2.4
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.3
+**버전:** 1.2.4
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.
@@ -41,7 +41,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.3.exe`
+결과물: `dist\StartOfWorkSetup-1.2.4.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -61,7 +61,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.3.exe` (약 29MB).  
+결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.4.exe` (약 29MB).  
 `config.json`, `StartOfWork.ico`를 exe와 **같은 폴더**에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -220,6 +220,12 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.4
+
+- 업데이트 헬퍼 기동 수정: `cmd start "StartOfWorkUpdate"` 경로 오인 오류 제거
+- PowerShell `Start-Process`로 설치 스크립트 분리 실행
+- 산출물: `StartOfWork-1.2.4.exe`, `StartOfWorkSetup-1.2.4.exe`
 
 ### v1.2.3
 
