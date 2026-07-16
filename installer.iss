@@ -3,7 +3,7 @@
 ; 또는: .\build.ps1 -Installer
 
 #define MyAppName "StartOfWork"
-#define MyAppVersion "1.2.2"
+#define MyAppVersion "1.2.3"
 #define MyAppPublisher "StartOfWork"
 #define MyAppExeName "StartOfWork.exe"
 
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=StartOfWorkSetup-1.2.2
+OutputBaseFilename=StartOfWorkSetup-1.2.3
 SetupIconFile=StartOfWork.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -55,22 +55,86 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; \
     Flags: uninsdeletevalue
 
-; [Run] 설치 직후 자동 실행은 넣지 않음.
-; 서명 없는 exe를 Setup이 CreateProcess로 띄우면 Smart App Control이
-; 코드 4551로 차단하는 경우가 있음. 사용자는 설치 폴더/시작 메뉴에서 직접 실행.
+; 완료 화면 체크박스는 [Code]에서 처리 (Inno [Run] 실패 시 안내 문구 커스터마이즈)
+; skipifsilent: /SILENT·/VERYSILENT 자동 업데이트 시에는 실행하지 않음(헬퍼가 재시작)
 
 [UninstallDelete]
 Type: files; Name: "{app}\lock_state_monitor.log"
 
 [Code]
+var
+  LaunchAfterInstallCheck: TNewCheckBox;
+
+function IsReadmeRunItem(const Caption: String): Boolean;
+var
+  UpperCap: String;
+begin
+  UpperCap := UpperCase(Caption);
+  Result := (Pos('README', UpperCap) > 0) or (Pos('설명서', Caption) > 0);
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 var
   I: Integer;
+  ExePath: String;
 begin
-  { 완료 화면의 README 열기 체크박스를 기본 해제 }
-  if CurPageID = wpFinished then
+  if CurPageID <> wpFinished then
+    Exit;
+
+  ExePath := ExpandConstant('{app}\{#MyAppExeName}');
+
+  { README 열기 체크는 기본 해제 }
+  for I := 0 to WizardForm.RunList.Items.Count - 1 do
   begin
-    for I := 0 to WizardForm.RunList.Items.Count - 1 do
+    if IsReadmeRunItem(WizardForm.RunList.ItemCaption[I]) then
       WizardForm.RunList.Checked[I] := False;
+  end;
+
+  WizardForm.FinishedLabel.Caption :=
+    '설치가 완료되었습니다.'#13#10#13#10 +
+    '아래에서 「StartOfWork 실행」을 선택하면 프로그램을 바로 시작합니다.'#13#10 +
+    'Windows(스마트 앱 컨트롤 등)가 자동 실행을 막으면 시작 메뉴 또는'#13#10 +
+    '다음 경로에서 직접 실행하세요.'#13#10#13#10 +
+    ExePath;
+
+  if LaunchAfterInstallCheck = nil then
+  begin
+    LaunchAfterInstallCheck := TNewCheckBox.Create(WizardForm);
+    LaunchAfterInstallCheck.Parent := WizardForm.FinishedPage;
+    LaunchAfterInstallCheck.Left := WizardForm.FinishedLabel.Left;
+    LaunchAfterInstallCheck.Top :=
+      WizardForm.FinishedLabel.Top + WizardForm.FinishedLabel.Height + ScaleY(12);
+    LaunchAfterInstallCheck.Width := WizardForm.FinishedLabel.Width;
+    LaunchAfterInstallCheck.Height := ScaleY(22);
+    LaunchAfterInstallCheck.Caption := 'StartOfWork 실행';
+    LaunchAfterInstallCheck.Checked := True;
+  end
+  else
+  begin
+    LaunchAfterInstallCheck.Top :=
+      WizardForm.FinishedLabel.Top + WizardForm.FinishedLabel.Height + ScaleY(12);
+    LaunchAfterInstallCheck.Visible := True;
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ResultCode: Integer;
+  ExePath: String;
+begin
+  Result := True;
+  if CurPageID <> wpFinished then
+    Exit;
+  if (LaunchAfterInstallCheck = nil) or (not LaunchAfterInstallCheck.Checked) then
+    Exit;
+
+  ExePath := ExpandConstant('{app}\{#MyAppExeName}');
+  if not Exec(ExePath, '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode) then
+  begin
+    MsgBox(
+      'Windows가 프로그램 자동 실행을 차단했을 수 있습니다.'#13#10#13#10 +
+      '시작 메뉴의 「StartOfWork」또는 아래 경로에서 직접 실행하세요.'#13#10#13#10 +
+      ExePath,
+      mbInformation, MB_OK);
   end;
 end;

@@ -128,8 +128,22 @@ class TestUpdaterNetwork(unittest.TestCase):
         )
 
         class _Resp:
-            def read(self) -> bytes:
-                return payload
+            headers = {"Content-Length": str(len(payload))}
+
+            def __init__(self) -> None:
+                self._data = payload
+                self._pos = 0
+
+            def read(self, size: int = -1) -> bytes:
+                if self._pos >= len(self._data):
+                    return b""
+                if size < 0:
+                    chunk = self._data[self._pos :]
+                    self._pos = len(self._data)
+                    return chunk
+                chunk = self._data[self._pos : self._pos + size]
+                self._pos += len(chunk)
+                return chunk
 
             def __enter__(self):
                 return self
@@ -139,9 +153,18 @@ class TestUpdaterNetwork(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
+            seen: list[tuple[int, int]] = []
+
+            def _progress(downloaded: int, total: int) -> None:
+                seen.append((downloaded, total))
+
             with mock.patch("startofwork.updater.urlopen", return_value=_Resp()):
-                path = download_release_asset(release, dest_dir=dest)
+                path = download_release_asset(
+                    release, dest_dir=dest, progress_callback=_progress
+                )
             self.assertTrue(path.is_file())
+            self.assertTrue(seen)
+            self.assertEqual(seen[-1][0], len(payload))
             verify_download(path, digest)
             from startofwork.updater import UpdateError
 

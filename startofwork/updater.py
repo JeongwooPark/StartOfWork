@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -21,6 +21,8 @@ from startofwork.constants import (
     UPDATE_SETUP_NAME_TEMPLATE,
     UPDATE_USER_AGENT,
 )
+
+ProgressCallback = Callable[[int, int], None]
 
 _SETUP_SHA_RE = re.compile(
     r"StartOfWorkSetup-[\d.]+\.exe[`'\"]?\s*:\s*[`'\"]?([A-Fa-f0-9]{64})",
@@ -180,7 +182,12 @@ def download_release_asset(
     *,
     dest_dir: Optional[Path] = None,
     timeout_sec: float = 120.0,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Path:
+    """릴리스 자산을 스트리밍 다운로드. progress_callback(downloaded, total).
+
+    total이 없으면(헤더 없음) total=0 으로 콜백한다.
+    """
     target_dir = dest_dir or get_update_download_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     dest_path = target_dir / release.asset_name
@@ -194,7 +201,23 @@ def download_release_asset(
     logging.info("업데이트 다운로드 시작: %s", release.asset_name)
     try:
         with urlopen(request, timeout=timeout_sec) as response:
-            data = response.read()
+            total_header = response.headers.get("Content-Length")
+            try:
+                total = int(total_header) if total_header else 0
+            except ValueError:
+                total = 0
+            downloaded = 0
+            if progress_callback is not None:
+                progress_callback(0, total)
+            with temp_path.open("wb") as out:
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(downloaded, total)
     except HTTPError as exc:
         raise UpdateError(f"다운로드 실패 (HTTP {exc.code})") from exc
     except URLError as exc:
@@ -202,9 +225,17 @@ def download_release_asset(
     except Exception as exc:
         raise UpdateError("다운로드 실패") from exc
 
-    temp_path.write_bytes(data)
+    if not temp_path.is_file() or temp_path.stat().st_size <= 0:
+        raise UpdateError("다운로드된 파일이 비어 있습니다.")
     temp_path.replace(dest_path)
-    logging.info("업데이트 다운로드 완료: %s (%d bytes)", dest_path, dest_path.stat().st_size)
+    if progress_callback is not None:
+        size = dest_path.stat().st_size
+        progress_callback(size, size if total <= 0 else total)
+    logging.info(
+        "업데이트 다운로드 완료: %s (%d bytes)",
+        dest_path,
+        dest_path.stat().st_size,
+    )
     return dest_path
 
 
@@ -329,7 +360,17 @@ def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> N
     )
 
 
-def download_and_prepare_update(release: ReleaseInfo) -> Path:
-    path = download_release_asset(release)
+def download_and_prepare_update(
+    release: ReleaseInfo,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Path:
+    path = download_release_asset(
+        release, progress_callback=progress_callback
+    )
+    if progress_callback is not None:
+        # 검증 단계 표시용: total=total, downloaded=total 유지
+        size = path.stat().st_size
+        progress_callback(size, size)
     verify_download(path, release.expected_sha256)
     return path

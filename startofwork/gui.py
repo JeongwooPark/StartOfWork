@@ -1153,39 +1153,95 @@ class LockStateMonitor(tk.Tk):
             justify="left",
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        status_var = tk.StringVar(value=message)
+        status_var = tk.StringVar(
+            value=f"{message} — 먼저 다운로드한 뒤 설치하세요."
+        )
         ttk.Label(
             frame,
             textvariable=status_var,
             style="Caption.TLabel",
             wraplength=380,
             justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        progress = ttk.Progressbar(
+            frame, mode="determinate", maximum=100, length=360
+        )
+        progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        progress_label_var = tk.StringVar(value="대기 중")
+        ttk.Label(
+            frame,
+            textvariable=progress_label_var,
+            style="Caption.TLabel",
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
         button_row = ttk.Frame(frame)
-        button_row.grid(row=4, column=0, columnspan=2, sticky="e")
+        button_row.grid(row=6, column=0, columnspan=2, sticky="e")
 
-        install_button = ttk.Button(button_row, text="다운로드 및 설치")
+        download_button = ttk.Button(button_row, text="다운로드")
+        install_button = ttk.Button(button_row, text="설치 및 재시작")
+        install_button.configure(state="disabled")
+
+        downloaded_setup: dict[str, Optional[Path]] = {"path": None}
+        phase = {"name": "idle"}  # idle | downloading | ready | installing
+
+        def _format_bytes(n: int) -> str:
+            if n < 1024:
+                return f"{n} B"
+            if n < 1024 * 1024:
+                return f"{n / 1024:.1f} KB"
+            return f"{n / (1024 * 1024):.1f} MB"
 
         def _close_dialog() -> None:
-            if self._update_busy:
+            if phase["name"] in ("downloading", "installing"):
                 status_var.set("업데이트 진행 중입니다. 잠시만 기다려 주세요.")
                 return
             dialog.grab_release()
             dialog.destroy()
             self._update_dialog = None
+            self._update_busy = False
 
-        def _on_install() -> None:
-            if self._update_busy:
+        def _on_progress(downloaded: int, total: int) -> None:
+            def _ui() -> None:
+                if not dialog.winfo_exists():
+                    return
+                if total > 0:
+                    try:
+                        progress.stop()
+                    except tk.TclError:
+                        pass
+                    pct = min(100, int(downloaded * 100 / total))
+                    progress.configure(mode="determinate", maximum=100, value=pct)
+                    progress_label_var.set(
+                        f"다운로드 중… {pct}% "
+                        f"({_format_bytes(downloaded)} / {_format_bytes(total)})"
+                    )
+                else:
+                    if str(progress.cget("mode")) != "indeterminate":
+                        progress.configure(mode="indeterminate")
+                        progress.start(12)
+                    progress_label_var.set(
+                        f"다운로드 중… {_format_bytes(downloaded)}"
+                    )
+
+            self.after(0, _ui)
+
+        def _on_download() -> None:
+            if self._update_busy or phase["name"] != "idle":
                 return
             self._update_busy = True
+            phase["name"] = "downloading"
+            download_button.configure(state="disabled")
             install_button.configure(state="disabled")
-            status_var.set("다운로드 중… (잠시만 기다려 주세요)")
-            dialog.update_idletasks()
+            progress.configure(mode="determinate", value=0)
+            status_var.set("설치 파일을 다운로드하는 중입니다.")
+            progress_label_var.set("다운로드 시작…")
 
             def _worker() -> None:
                 try:
-                    setup_path = download_and_prepare_update(release)
+                    setup_path = download_and_prepare_update(
+                        release, progress_callback=_on_progress
+                    )
                     self.after(
                         0,
                         lambda: _on_download_done(True, setup_path, ""),
@@ -1215,24 +1271,76 @@ class LockStateMonitor(tk.Tk):
         ) -> None:
             if not dialog.winfo_exists():
                 self._update_busy = False
+                phase["name"] = "idle"
                 return
+            try:
+                progress.stop()
+            except tk.TclError:
+                pass
+            progress.configure(mode="determinate", maximum=100)
+
             if not ok or setup_path is None:
                 self._update_busy = False
-                install_button.configure(state="normal")
+                phase["name"] = "idle"
+                downloaded_setup["path"] = None
+                progress.configure(value=0)
+                progress_label_var.set("실패")
                 status_var.set(error_message)
+                download_button.configure(state="normal", text="다시 다운로드")
+                install_button.configure(state="disabled")
                 return
 
-            status_var.set("설치를 시작합니다. 프로그램이 종료된 뒤 재시작됩니다.")
+            downloaded_setup["path"] = setup_path
+            self._update_busy = False
+            phase["name"] = "ready"
+            progress.configure(value=100)
+            progress_label_var.set(
+                f"다운로드 완료 ({_format_bytes(setup_path.stat().st_size)})"
+            )
+            status_var.set(
+                "다운로드가 완료되었습니다. 「설치 및 재시작」을 누르면 "
+                "프로그램 종료 후 설치가 진행됩니다."
+            )
+            download_button.configure(state="disabled", text="다운로드 완료")
+            install_button.configure(state="normal")
+            self._dispatch_notification(
+                "업데이트",
+                f"v{release.version} 다운로드 완료 — 설치를 진행하세요",
+            )
+
+        def _on_install() -> None:
+            if phase["name"] != "ready":
+                return
+            setup_path = downloaded_setup["path"]
+            if setup_path is None or not setup_path.is_file():
+                status_var.set("설치 파일이 없습니다. 다시 다운로드하세요.")
+                phase["name"] = "idle"
+                download_button.configure(state="normal", text="다운로드")
+                install_button.configure(state="disabled")
+                return
+
+            self._update_busy = True
+            phase["name"] = "installing"
+            download_button.configure(state="disabled")
+            install_button.configure(state="disabled")
+            status_var.set(
+                "설치를 시작합니다. 프로그램이 종료된 뒤 설치 창이 나타납니다."
+            )
+            progress_label_var.set("설치 준비 중…")
+            dialog.update_idletasks()
+
             try:
                 launch_update_installer(setup_path)
             except UpdateError as exc:
                 self._update_busy = False
+                phase["name"] = "ready"
                 install_button.configure(state="normal")
                 status_var.set(str(exc))
                 return
             except Exception:
                 logging.exception("업데이트 설치 시작 실패")
                 self._update_busy = False
+                phase["name"] = "ready"
                 install_button.configure(state="normal")
                 status_var.set("설치 시작에 실패했습니다.")
                 return
@@ -1241,17 +1349,18 @@ class LockStateMonitor(tk.Tk):
             dialog.destroy()
             self._update_dialog = None
             self._update_busy = False
-            # 헬퍼 프로세스가 기동할 시간을 준 뒤 종료
             self.after(800, self._quit_application)
 
+        download_button.configure(command=_on_download)
         install_button.configure(command=_on_install)
         install_button.pack(side="right")
+        download_button.pack(side="right", padx=(0, 8))
         ttk.Button(button_row, text="나중에", command=_close_dialog).pack(
             side="right", padx=(0, 8)
         )
 
         dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
-        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(0, weight=1)
         dialog.update_idletasks()
         dialog.geometry(
             f"+{self.winfo_rootx() + 40}+{self.winfo_rooty() + 40}"

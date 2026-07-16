@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.2
+# 출근 근태 자동 실행 (StartOfWork) v1.2.3
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.2
+**버전:** 1.2.3
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.
@@ -41,7 +41,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.2.exe`
+결과물: `dist\StartOfWorkSetup-1.2.3.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -50,7 +50,7 @@ uv sync
 | 사용 설명서 | `README.md`를 설치 폴더에 포함 (시작 메뉴에도 바로가기) |
 | 설정 파일 | 최초 설치 시 빈 `config.json` 생성. **재설치 시 기존 설정은 덮어쓰지 않음** |
 | 계정·URL 입력 | **설치 과정에서는 생략**. 첫 실행 시 GUI에서 근태 URL → 아이디/비밀번호 입력·검증 |
-| 설치 후 실행 | 설치 마법사가 앱을 자동 실행하지 않음(Smart App Control 차단 방지). **시작 메뉴** 또는 설치 폴더의 `StartOfWork.exe`를 직접 실행 |
+| 설치 후 실행 | 완료 화면에서 **「StartOfWork 실행」** 옵션(기본 선택). Windows가 자동 실행을 막으면 안내 메시지 후 **시작 메뉴**/설치 폴더에서 직접 실행 |
 | 제거 | Windows 설정 → 앱 → StartOfWork (시작프로그램 등록도 함께 해제) |
 
 설치 직후 실행하면, 설정이 비어 있을 때 GUI에서 근태 주소와 로그인 정보를 순서대로 받습니다.
@@ -61,7 +61,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.2.exe` (약 29MB).  
+결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.3.exe` (약 29MB).  
 `config.json`, `StartOfWork.ico`를 exe와 **같은 폴더**에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -125,7 +125,8 @@ uv run python main.py
 - 시작 약 5초 후 GitHub Releases **latest**를 1회 확인 (`update_check_enabled`가 `true`일 때)
 - **매일 새벽 01:00**에 정기 확인 1회 (앱이 실행 중일 때)
 - 새 버전이 있으면 트레이 알림 표시
-- 트레이 메뉴 **업데이트 확인** → 결과를 **트레이 알림**으로 표시 (새 버전이면 설치 대화상자)
+- 트레이 메뉴 **업데이트 확인** → 결과를 **트레이 알림**으로 표시
+- 업데이트 대화상자: **다운로드**(진행률 표시) → 완료 후 **설치 및 재시작**
 - 설치 파일: `StartOfWorkSetup-{version}.exe` (Release에 첨부)
 - Release 본문에 SHA256이 있으면 다운로드 후 검증
 - `config.json`, 출근 상태, `chrome_profile/` 등 사용자 데이터는 설치 시 유지
@@ -220,11 +221,18 @@ winget install JRSoftware.InnoSetup
 
 ## 패치 노트
 
+### v1.2.3
+
+- 업데이트: **다운로드 완료 후 설치** 2단계로 분리
+- 다운로드 진행률(%, 용량) 표시
+- 산출물: `StartOfWork-1.2.3.exe`, `StartOfWorkSetup-1.2.3.exe`
+
 ### v1.2.2
 
 - 자동 업데이트 설치 헬퍼 수정: 앱 종료 시 설치 스크립트가 함께 죽던 문제
 - `timeout` 배치 대신 PowerShell 분리 실행 + 로그(`%TEMP%\StartOfWorkUpdate\update.log`)
 - Setup을 `/SILENT`(진행 창 표시)로 실행
+- 설치 완료 화면 **「StartOfWork 실행」** 옵션(기본 선택). Windows 차단 시 수동 실행 안내
 - 산출물: `StartOfWork-1.2.2.exe`, `StartOfWorkSetup-1.2.2.exe`
 
 ### v1.2.1
