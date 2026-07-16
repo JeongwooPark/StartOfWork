@@ -1,0 +1,8 @@
+{
+  "username": "",
+  "password": "",
+  "active_start_time": "08:30",
+  "active_end_time": "18:00",
+  "auto_checkout_enabled": false,
+  "auto_checkout_time": "18:00"
+}

@@ -1,0 +1,11 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+.lock_state_monitor.log
+lock_state_monitor.log
+check_in_state.json
+holiday_cache.json
+chrome_profile/
+config.json
