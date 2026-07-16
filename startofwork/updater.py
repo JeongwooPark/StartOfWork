@@ -237,8 +237,16 @@ def get_installed_exe_path() -> Path:
     return Path(local_app_data) / "StartOfWork" / "StartOfWork.exe"
 
 
+def _ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> None:
-    """설치 파일을 백그라운드로 실행하고 현재 프로세스 종료를 기다린 뒤 재시작."""
+    """앱 종료 후 Setup을 실행하는 독립 프로세스를 띄운다.
+
+    배치+timeout은 창 없는 환경에서 즉시 실패하고, 부모 종료 시 자식이
+    함께 죽는 경우가 있어 PowerShell을 start로 분리 실행한다.
+    """
     setup_path = setup_path.resolve()
     if not setup_path.is_file():
         raise UpdateError(f"설치 파일이 없습니다: {setup_path}")
@@ -246,45 +254,78 @@ def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> N
     current_pid = pid or os.getpid()
     installed_exe = get_installed_exe_path()
     script_dir = get_update_download_dir()
-    bat_path = script_dir / "apply_update.bat"
+    ps1_path = script_dir / "apply_update.ps1"
+    log_path = script_dir / "update.log"
 
-    bat_lines = [
-        "@echo off",
-        "setlocal",
-        f"set TARGET_PID={current_pid}",
-        f"set SETUP={setup_path}",
-        f"set EXE={installed_exe}",
-        ":wait_loop",
-        'tasklist /FI "PID eq %TARGET_PID%" 2>nul | find "%TARGET_PID%" >nul',
-        "if %ERRORLEVEL%==0 (",
-        "  timeout /t 1 /nobreak >nul",
-        "  goto wait_loop",
-        ")",
-        'if not exist "%SETUP%" exit /b 1',
-        '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
-        "if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%",
-        'if exist "%EXE%" start "" "%EXE%"',
-        "del /f /q \"%~f0\" >nul 2>&1",
-        "endlocal",
-    ]
-    bat_path.write_text("\r\n".join(bat_lines) + "\r\n", encoding="cp949", errors="replace")
+    # /SILENT: 진행 창만 표시 (VERYSILENT는 UI가 없어 실패처럼 보임)
+    # CLOSEAPPLICATIONS: 잠긴 exe 교체 유도
+    script = "\n".join(
+        [
+            "$ErrorActionPreference = 'Continue'",
+            f"$targetPid = {int(current_pid)}",
+            f"$setup = {_ps_single_quote(str(setup_path))}",
+            f"$exe = {_ps_single_quote(str(installed_exe))}",
+            f"$log = {_ps_single_quote(str(log_path))}",
+            "function Write-UpdateLog([string]$Message) {",
+            "  $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message",
+            "  Add-Content -LiteralPath $log -Value $line -Encoding UTF8",
+            "}",
+            "Write-UpdateLog ('start pid=' + $targetPid)",
+            "Write-UpdateLog ('setup=' + $setup)",
+            "$waited = 0",
+            "while ($waited -lt 120) {",
+            "  $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue",
+            "  if ($null -eq $proc) { break }",
+            "  Start-Sleep -Seconds 1",
+            "  $waited++",
+            "}",
+            "Write-UpdateLog ('app exited after ' + $waited + 's')",
+            "Start-Sleep -Seconds 2",
+            "if (-not (Test-Path -LiteralPath $setup)) {",
+            "  Write-UpdateLog 'setup file missing'",
+            "  exit 1",
+            "}",
+            "Write-UpdateLog 'launching setup'",
+            "$setupArgs = @('/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS')",
+            "$p = Start-Process -FilePath $setup -ArgumentList $setupArgs -PassThru -Wait",
+            "Write-UpdateLog ('setup exitCode=' + $p.ExitCode)",
+            "if ($p.ExitCode -ne 0) { exit $p.ExitCode }",
+            "Start-Sleep -Seconds 1",
+            "if (Test-Path -LiteralPath $exe) {",
+            "  Write-UpdateLog 'restarting app'",
+            "  Start-Process -FilePath $exe",
+            "} else {",
+            "  Write-UpdateLog 'installed exe missing'",
+            "}",
+            "Write-UpdateLog 'done'",
+        ]
+    )
+    ps1_path.write_text(script + "\n", encoding="utf-8")
 
+    # cmd start 로 부모 Job에서 분리 — 앱 종료 시 업데이트 프로세스가 죽지 않도록
+    # title 빈 문자열이 아니라 제목을 줘야 /min 이 명령으로 해석됨
+    launch_cmd = (
+        'start "StartOfWorkUpdate" /min '
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass "
+        f'-File "{ps1_path}"'
+    )
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        )
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     subprocess.Popen(
-        ["cmd.exe", "/c", str(bat_path)],
+        ["cmd.exe", "/c", launch_cmd],
         creationflags=creationflags,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         close_fds=True,
     )
     logging.info(
-        "업데이트 설치 스크립트 시작: pid=%s setup=%s",
+        "업데이트 설치 스크립트 시작: pid=%s setup=%s log=%s",
         current_pid,
         setup_path,
+        log_path,
     )
 
 

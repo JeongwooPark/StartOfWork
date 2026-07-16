@@ -1241,7 +1241,8 @@ class LockStateMonitor(tk.Tk):
             dialog.destroy()
             self._update_dialog = None
             self._update_busy = False
-            self._quit_application()
+            # 헬퍼 프로세스가 기동할 시간을 준 뒤 종료
+            self.after(800, self._quit_application)
 
         install_button.configure(command=_on_install)
         install_button.pack(side="right")
