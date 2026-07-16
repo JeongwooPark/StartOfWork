@@ -7,6 +7,7 @@ import logging
 import threading
 import tkinter as tk
 from datetime import date, datetime, time as dt_time
+from pathlib import Path
 from tkinter import ttk
 from typing import Optional
 
@@ -31,6 +32,7 @@ from startofwork.config import (
     is_missing_credentials,
     load_active_hours,
     load_auto_checkout_settings,
+    load_update_check_enabled,
     normalize_attendance_url,
     parse_hhmm,
     save_active_hours,
@@ -39,7 +41,9 @@ from startofwork.config import (
 )
 from startofwork.constants import (
     APP_TITLE,
+    APP_VERSION,
     CHECK_INTERVAL_IDLE_MS,
+    UPDATE_CHECK_TIME,
     CHECK_INTERVAL_MS,
     CHECK_INTERVAL_QUIET_MS,
     DEFAULT_ACTIVE_END_TIME,
@@ -58,6 +62,13 @@ from startofwork.lock_state import get_windows_lock_state
 from startofwork.notifications import set_notification_handler
 from startofwork.paths import APP_ICON_FILE
 from startofwork.rules import is_within_active_hours, should_attempt_check_out, should_open_browser
+from startofwork.updater import (
+    ReleaseInfo,
+    UpdateError,
+    check_for_update,
+    download_and_prepare_update,
+    launch_update_installer,
+)
 
 
 def _seconds_until_time(now: datetime, target: dt_time) -> float:
@@ -87,6 +98,7 @@ def next_poll_interval_ms(
     last_check_in: Optional[date],
     last_check_out: Optional[date],
     active_start: dt_time,
+    update_check_enabled: bool = False,
 ) -> int:
     """폴링 주기(ms). 출근/퇴근 임박은 짧게, 한산 구간은 길게."""
     today = now.date()
@@ -108,6 +120,10 @@ def next_poll_interval_ms(
     if pending_check_out and (
         now.time() >= checkout_time or _is_near_time(now, checkout_time)
     ):
+        return CHECK_INTERVAL_MS
+
+    # 새벽 1시 업데이트 확인 직전은 짧게 폴링해 시각을 놓치지 않음
+    if update_check_enabled and _is_near_time(now, UPDATE_CHECK_TIME):
         return CHECK_INTERVAL_MS
 
     if pending_check_in or pending_check_out:
@@ -175,6 +191,13 @@ class LockStateMonitor(tk.Tk):
         self._checkout_triggered_date: Optional[date] = None
         self._login_setup_dialog: Optional[tk.Toplevel] = None
         self._login_verifying = False
+        self._update_dialog: Optional[tk.Toplevel] = None
+        self._update_busy = False
+        self._pending_update: Optional[ReleaseInfo] = None
+        self._startup_update_check_done = False
+        # 매일 새벽 1시 업데이트 확인 (시각 진입 감지)
+        self._was_past_update_check_time: Optional[bool] = None
+        self._daily_update_check_date: Optional[date] = None
         # 부팅/로그인 직후 출근은 프로세스당 1회만 시도
         self._startup_check_in_attempted = False
         # 업무시간 시작 시각 진입 감지용 (날짜당 1회)
@@ -225,6 +248,7 @@ class LockStateMonitor(tk.Tk):
             self.after_idle(self._minimize_to_tray)
             # 잠금→해제 없이 부팅/로그인만 한 경우에도 오늘 미출근이면 1회 시도
             self.after(2000, self._try_startup_check_in)
+            self.after(5000, self._try_startup_update_check)
         else:
             logging.info("앱 설정 없음 — GUI에서 근태 URL·계정 입력 요청")
             self.after_idle(self._prompt_login_setup)
@@ -984,7 +1008,265 @@ class LockStateMonitor(tk.Tk):
 
     def _status_label_text(self) -> str:
         """창 제목·트레이 라벨에 사용하는 텍스트"""
-        return f"{APP_TITLE} - 출근체크: {self._check_in_status_text}"
+        return (
+            f"{APP_TITLE} v{APP_VERSION} - 출근체크: {self._check_in_status_text}"
+        )
+
+    def _try_startup_update_check(self) -> None:
+        if self._startup_update_check_done:
+            return
+        self._startup_update_check_done = True
+        if not load_update_check_enabled():
+            logging.info("업데이트 확인 비활성화 — 시작 시 확인 생략")
+            return
+        self._run_update_check(notify_only=True)
+
+    def _maybe_run_daily_update_check(self, now: datetime) -> None:
+        """매일 UPDATE_CHECK_TIME(새벽 1시) 진입 시 1회 업데이트 확인."""
+        past = now.time() >= UPDATE_CHECK_TIME
+        previous = self._was_past_update_check_time
+        self._was_past_update_check_time = past
+
+        if previous is not False or not past:
+            return
+        if self._daily_update_check_date == now.date():
+            return
+        if not load_update_check_enabled():
+            logging.info("업데이트 확인 비활성화 — 정기 확인 생략")
+            return
+
+        self._daily_update_check_date = now.date()
+        logging.info(
+            "정기 업데이트 확인 (%s)",
+            UPDATE_CHECK_TIME.strftime("%H:%M"),
+        )
+        self._run_update_check(notify_only=True)
+
+    def _tray_check_update(
+        self, icon: Optional[pystray.Icon] = None, item=None
+    ) -> None:
+        self.after(0, lambda: self._run_update_check(notify_only=False))
+
+    def _run_update_check(self, *, notify_only: bool) -> None:
+        if self._update_busy:
+            return
+
+        def _worker() -> None:
+            try:
+                release, message = check_for_update()
+            except UpdateError as exc:
+                self.after(
+                    0,
+                    lambda: self._on_update_check_done(
+                        None, str(exc), notify_only=notify_only
+                    ),
+                )
+                return
+            except Exception:
+                logging.exception("업데이트 확인 실패")
+                self.after(
+                    0,
+                    lambda: self._on_update_check_done(
+                        None,
+                        "업데이트 확인 중 오류가 발생했습니다.",
+                        notify_only=notify_only,
+                    ),
+                )
+                return
+            self.after(
+                0,
+                lambda: self._on_update_check_done(
+                    release, message, notify_only=notify_only
+                ),
+            )
+
+        threading.Thread(
+            target=_worker,
+            name="update-check",
+            daemon=True,
+        ).start()
+
+    def _on_update_check_done(
+        self,
+        release: Optional[ReleaseInfo],
+        message: str,
+        *,
+        notify_only: bool,
+    ) -> None:
+        if release is not None:
+            self._pending_update = release
+            logging.info("업데이트 가능: %s", release.version)
+            if notify_only:
+                self._dispatch_notification(
+                    "업데이트 알림",
+                    f"새 버전 {release.version} 사용 가능 — 트레이에서 업데이트 확인",
+                )
+                return
+            self._show_update_dialog(release, message)
+            return
+
+        self._pending_update = None
+        logging.info("업데이트 확인: %s", message)
+        if notify_only:
+            return
+        self._show_update_info_dialog(message)
+
+    def _show_update_info_dialog(self, message: str) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("업데이트 확인")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        frame = ttk.Frame(dialog, padding=(20, 18, 20, 18))
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=message, style="Info.TLabel", wraplength=360).pack(
+            anchor="w", pady=(0, 12)
+        )
+        ttk.Button(frame, text="확인", command=dialog.destroy).pack(anchor="e")
+        dialog.update_idletasks()
+        dialog.geometry(
+            f"+{self.winfo_rootx() + 40}+{self.winfo_rooty() + 40}"
+        )
+
+    def _show_update_dialog(self, release: ReleaseInfo, message: str) -> None:
+        if self._update_dialog is not None and self._update_dialog.winfo_exists():
+            self._update_dialog.lift()
+            self._update_dialog.focus_force()
+            return
+
+        self.deiconify()
+        self.lift()
+
+        dialog = tk.Toplevel(self)
+        self._update_dialog = dialog
+        dialog.title("업데이트")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=(20, 18, 20, 18))
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text=f"새 버전 {release.version} 사용 가능",
+            style="Info.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(
+            frame,
+            text=f"현재 버전: {APP_VERSION}",
+            style="Caption.TLabel",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Label(
+            frame,
+            text=f"설치 파일: {release.asset_name}",
+            style="Caption.TLabel",
+            wraplength=380,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        status_var = tk.StringVar(value=message)
+        ttk.Label(
+            frame,
+            textvariable=status_var,
+            style="Caption.TLabel",
+            wraplength=380,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 12))
+
+        button_row = ttk.Frame(frame)
+        button_row.grid(row=4, column=0, columnspan=2, sticky="e")
+
+        install_button = ttk.Button(button_row, text="다운로드 및 설치")
+
+        def _close_dialog() -> None:
+            if self._update_busy:
+                status_var.set("업데이트 진행 중입니다. 잠시만 기다려 주세요.")
+                return
+            dialog.grab_release()
+            dialog.destroy()
+            self._update_dialog = None
+
+        def _on_install() -> None:
+            if self._update_busy:
+                return
+            self._update_busy = True
+            install_button.configure(state="disabled")
+            status_var.set("다운로드 중… (잠시만 기다려 주세요)")
+            dialog.update_idletasks()
+
+            def _worker() -> None:
+                try:
+                    setup_path = download_and_prepare_update(release)
+                    self.after(
+                        0,
+                        lambda: _on_download_done(True, setup_path, ""),
+                    )
+                except UpdateError as exc:
+                    self.after(
+                        0,
+                        lambda: _on_download_done(False, None, str(exc)),
+                    )
+                except Exception:
+                    logging.exception("업데이트 다운로드 실패")
+                    self.after(
+                        0,
+                        lambda: _on_download_done(
+                            False, None, "다운로드 중 오류가 발생했습니다."
+                        ),
+                    )
+
+            threading.Thread(
+                target=_worker,
+                name="update-download",
+                daemon=True,
+            ).start()
+
+        def _on_download_done(
+            ok: bool, setup_path: Optional[Path], error_message: str
+        ) -> None:
+            if not dialog.winfo_exists():
+                self._update_busy = False
+                return
+            if not ok or setup_path is None:
+                self._update_busy = False
+                install_button.configure(state="normal")
+                status_var.set(error_message)
+                return
+
+            status_var.set("설치를 시작합니다. 프로그램이 종료된 뒤 재시작됩니다.")
+            try:
+                launch_update_installer(setup_path)
+            except UpdateError as exc:
+                self._update_busy = False
+                install_button.configure(state="normal")
+                status_var.set(str(exc))
+                return
+            except Exception:
+                logging.exception("업데이트 설치 시작 실패")
+                self._update_busy = False
+                install_button.configure(state="normal")
+                status_var.set("설치 시작에 실패했습니다.")
+                return
+
+            dialog.grab_release()
+            dialog.destroy()
+            self._update_dialog = None
+            self._update_busy = False
+            self._quit_application()
+
+        install_button.configure(command=_on_install)
+        install_button.pack(side="right")
+        ttk.Button(button_row, text="나중에", command=_close_dialog).pack(
+            side="right", padx=(0, 8)
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
+        frame.columnconfigure(1, weight=1)
+        dialog.update_idletasks()
+        dialog.geometry(
+            f"+{self.winfo_rootx() + 40}+{self.winfo_rooty() + 40}"
+        )
 
     def _update_tray_title(self) -> None:
         """트레이 아이콘 툴팁에 출근체크 여부 반영"""
@@ -1304,6 +1586,7 @@ class LockStateMonitor(tk.Tk):
             last_check_in=load_last_check_in_date(),
             last_check_out=load_last_check_out_date(),
             active_start=active_start,
+            update_check_enabled=load_update_check_enabled(),
         )
 
     def _apply_last_changed_label(self) -> None:
@@ -1345,6 +1628,7 @@ class LockStateMonitor(tk.Tk):
         self._update_check_in_display(now)
         self._update_check_out_display(now)
         self._maybe_run_auto_checkout(now)
+        self._maybe_run_daily_update_check(now)
 
         within = is_within_active_hours(now)
         state = get_windows_lock_state()
@@ -1434,6 +1718,7 @@ class LockStateMonitor(tk.Tk):
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("열기", self._tray_show, default=True),
+            pystray.MenuItem("업데이트 확인", self._tray_check_update),
             pystray.MenuItem("종료", self._tray_quit),
         )
         self._tray_icon = pystray.Icon(

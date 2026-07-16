@@ -1,12 +1,12 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.1.4
+# 출근 근태 자동 실행 (StartOfWork) v1.2.0
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.1.4
+**버전:** 1.2.0
 
-> **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다. 자동 업데이트는 없습니다.  
-> 1.2.0부터 GitHub Releases 기반 업데이트를 사용할 예정입니다.
+> **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
+> **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.
 
 ## 주요 기능
 
@@ -21,6 +21,7 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 - **공휴일 판별**: [한국천문연구원 특일정보 Open API](https://www.data.go.kr/data/15012690/openapi.do) (매일 확인, 내용 변경 시에만 캐시 갱신)
 - **주말/공휴일 제외**: 토·일·공휴일에는 출근·퇴근 자동화 생략
 - **최초 설정**: 설치 후 첫 실행 시 **① 근태 페이지 URL → ② 아이디/비밀번호 → 로그인·근태 페이지 검증 후 저장**
+- **자동 업데이트 (1.2.0+)**: GitHub Releases에서 `StartOfWorkSetup-x.y.z.exe` 확인·다운로드·무인 설치
 - **시스템 트레이**: 시작 시 트레이로 최소화, 툴팁에 출근체크 상태 표시
 - **완료 알림**: 출근/퇴근 처리 성공 시 시스템 트레이 알림 표시
 - **중복 실행 방지**: 이미 실행 중이면 경고 후 추가 인스턴스를 시작하지 않음
@@ -40,7 +41,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.1.4.exe`
+결과물: `dist\StartOfWorkSetup-1.2.0.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -60,7 +61,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.1.4.exe` (약 29MB).  
+결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.0.exe` (약 29MB).  
 `config.json`, `StartOfWork.ico`를 exe와 **같은 폴더**에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -92,7 +93,8 @@ uv run python main.py
   "active_start_time": "08:30",
   "active_end_time": "18:00",
   "auto_checkout_enabled": false,
-  "auto_checkout_time": "18:00"
+  "auto_checkout_time": "18:00",
+  "update_check_enabled": true
 }
 ```
 
@@ -105,6 +107,7 @@ uv run python main.py
 | `active_end_time` | 출근 자동화 종료 시각 (`HH:MM`, 기본 `18:00`) |
 | `auto_checkout_enabled` | 자동 퇴근 사용 여부 (`true` / `false`) |
 | `auto_checkout_time` | 자동 퇴근 시각 (`HH:MM`, 기본 `18:00`) |
+| `update_check_enabled` | GitHub Releases 업데이트 확인 (`true` / `false`, 기본 `true`) |
 
 - GUI의 **업무시간**, **자동 퇴근 활성화**, **퇴근 시각**은 변경 즉시 저장됩니다.
 - 구버전(1.1.3 이하) config에 `attendance_url`이 없고 계정만 있으면, 기존 기본 URL로 자동 보강됩니다.
@@ -116,6 +119,16 @@ uv run python main.py
 1. **근태 URL** 입력 후 다음
 2. **아이디/비밀번호** 입력
 3. **확인 및 저장** → 해당 URL로 로그인·근태 버튼 검증 후 `config.json`에 저장
+
+### 자동 업데이트 (1.2.0+)
+
+- 시작 약 5초 후 GitHub Releases **latest**를 1회 확인 (`update_check_enabled`가 `true`일 때)
+- **매일 새벽 01:00**에 정기 확인 1회 (앱이 실행 중일 때)
+- 새 버전이 있으면 트레이 알림 표시
+- 트레이 메뉴 **업데이트 확인** → 다운로드·무인 설치·재시작
+- 설치 파일: `StartOfWorkSetup-{version}.exe` (Release에 첨부)
+- Release 본문에 SHA256이 있으면 다운로드 후 검증
+- `config.json`, 출근 상태, `chrome_profile/` 등 사용자 데이터는 설치 시 유지
 
 ### 로그인 성공/실패 판정 (GUI 검증 시)
 
@@ -189,7 +202,7 @@ register_startup.ps1        # 포터블용 시작프로그램 등록
 ## 테스트
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_core -v
+.\.venv\Scripts\python.exe -m unittest tests.test_core tests.test_updater -v
 ```
 
 ## 의존성
@@ -206,6 +219,14 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.0
+
+- GitHub Releases 기반 자동 업데이트 (방안 A)
+- 시작 시 업데이트 1회 확인 + **매일 새벽 01:00** 정기 확인 + 트레이 **업데이트 확인** 메뉴
+- `StartOfWorkSetup-x.y.z.exe` 다운로드 → SHA256 검증(있을 때) → 무인 설치 → 재시작
+- `config.json`에 `update_check_enabled` 추가 (기본 `true`)
+- 산출물: `StartOfWork-1.2.0.exe`, `StartOfWorkSetup-1.2.0.exe`
 
 ### v1.1.4
 

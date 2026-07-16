@@ -2,8 +2,18 @@
 
 from datetime import time as dt_time
 
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.2.0"
 APP_TITLE = "출근 근태 자동 실행"
+# GitHub Releases 업데이트 (1.2.0+)
+GITHUB_REPO_OWNER = "JeongwooPark"
+GITHUB_REPO_NAME = "StartOfWork"
+GITHUB_RELEASES_LATEST_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
+)
+UPDATE_SETUP_NAME_TEMPLATE = "StartOfWorkSetup-{version}.exe"
+UPDATE_USER_AGENT = f"StartOfWork/{APP_VERSION}"
+# 매일 정기 업데이트 확인 시각 (로컬 시각)
+UPDATE_CHECK_TIME = dt_time(1, 0)
 # 폴링: 활성(출근/퇴근 임박)·대기·한산 구간
 CHECK_INTERVAL_MS = 1000
 CHECK_INTERVAL_IDLE_MS = 5000

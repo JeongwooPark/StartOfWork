@@ -484,6 +484,23 @@ class TestPollInterval(unittest.TestCase):
             ),
             CHECK_INTERVAL_IDLE_MS,
         )
+        # 새벽 1시 직전 + 업데이트 확인 켜짐 → 빠른 폴링
+        self.assertEqual(
+            next_poll_interval_ms(
+                datetime(2026, 7, 16, 0, 59, 0),
+                lock_state=False,
+                within=False,
+                checkout_enabled=False,
+                checkout_time=dt_time(18, 0),
+                checkout_triggered_date=None,
+                non_workday_reason="주말",
+                last_check_in=None,
+                last_check_out=None,
+                active_start=dt_time(8, 30),
+                update_check_enabled=True,
+            ),
+            CHECK_INTERVAL_MS,
+        )
 
 
 class TestAutoCheckoutTrigger(unittest.TestCase):
@@ -754,8 +771,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(app, "main"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.1.4")
-        self.assertEqual(startofwork.__version__, "1.1.4")
+        self.assertEqual(constants.APP_VERSION, "1.2.0")
+        self.assertEqual(startofwork.__version__, "1.2.0")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

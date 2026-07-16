@@ -23,6 +23,7 @@ _DEFAULT_CONFIG = {
     "active_end_time": "18:00",
     "auto_checkout_enabled": False,
     "auto_checkout_time": "18:00",
+    "update_check_enabled": True,
 }
 
 _config_cache: Optional[dict] = None
@@ -353,3 +354,22 @@ def save_auto_checkout_settings(enabled: bool, checkout_time: dt_time) -> None:
         )
     except Exception:
         logging.exception("자동 퇴근 설정 저장 실패")
+
+
+def load_update_check_enabled() -> bool:
+    try:
+        data = load_app_config()
+    except Exception:
+        logging.exception("업데이트 설정 로드 실패 — 기본값 사용")
+        return True
+    return bool(data.get("update_check_enabled", True))
+
+
+def save_update_check_enabled(enabled: bool) -> None:
+    try:
+        data = ensure_app_config()
+        data["update_check_enabled"] = bool(enabled)
+        save_app_config(data)
+        logging.info("업데이트 확인 설정 저장: enabled=%s", bool(enabled))
+    except Exception:
+        logging.exception("업데이트 확인 설정 저장 실패")
