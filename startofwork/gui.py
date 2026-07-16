@@ -1019,7 +1019,7 @@ class LockStateMonitor(tk.Tk):
         if not load_update_check_enabled():
             logging.info("업데이트 확인 비활성화 — 시작 시 확인 생략")
             return
-        self._run_update_check(notify_only=True)
+        self._run_update_check(source="auto")
 
     def _maybe_run_daily_update_check(self, now: datetime) -> None:
         """매일 UPDATE_CHECK_TIME(새벽 1시) 진입 시 1회 업데이트 확인."""
@@ -1040,14 +1040,15 @@ class LockStateMonitor(tk.Tk):
             "정기 업데이트 확인 (%s)",
             UPDATE_CHECK_TIME.strftime("%H:%M"),
         )
-        self._run_update_check(notify_only=True)
+        self._run_update_check(source="auto")
 
     def _tray_check_update(
         self, icon: Optional[pystray.Icon] = None, item=None
     ) -> None:
-        self.after(0, lambda: self._run_update_check(notify_only=False))
+        self.after(0, lambda: self._run_update_check(source="tray"))
 
-    def _run_update_check(self, *, notify_only: bool) -> None:
+    def _run_update_check(self, *, source: str = "tray") -> None:
+        """source: auto(시작/정기) | tray(트레이 메뉴)."""
         if self._update_busy:
             return
 
@@ -1058,7 +1059,7 @@ class LockStateMonitor(tk.Tk):
                 self.after(
                     0,
                     lambda: self._on_update_check_done(
-                        None, str(exc), notify_only=notify_only
+                        None, str(exc), source=source
                     ),
                 )
                 return
@@ -1069,14 +1070,14 @@ class LockStateMonitor(tk.Tk):
                     lambda: self._on_update_check_done(
                         None,
                         "업데이트 확인 중 오류가 발생했습니다.",
-                        notify_only=notify_only,
+                        source=source,
                     ),
                 )
                 return
             self.after(
                 0,
                 lambda: self._on_update_check_done(
-                    release, message, notify_only=notify_only
+                    release, message, source=source
                 ),
             )
 
@@ -1091,42 +1092,29 @@ class LockStateMonitor(tk.Tk):
         release: Optional[ReleaseInfo],
         message: str,
         *,
-        notify_only: bool,
+        source: str,
     ) -> None:
         if release is not None:
             self._pending_update = release
             logging.info("업데이트 가능: %s", release.version)
-            if notify_only:
+            notice = f"새 버전 {release.version} 사용 가능"
+            if source == "auto":
                 self._dispatch_notification(
                     "업데이트 알림",
-                    f"새 버전 {release.version} 사용 가능 — 트레이에서 업데이트 확인",
+                    f"{notice} — 트레이에서 업데이트 확인",
                 )
                 return
+            # 트레이: 알림으로 결과 표시 후 설치 대화상자
+            self._dispatch_notification("업데이트 알림", notice)
             self._show_update_dialog(release, message)
             return
 
         self._pending_update = None
         logging.info("업데이트 확인: %s", message)
-        if notify_only:
+        if source == "auto":
             return
-        self._show_update_info_dialog(message)
-
-    def _show_update_info_dialog(self, message: str) -> None:
-        dialog = tk.Toplevel(self)
-        dialog.title("업데이트 확인")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
-        frame = ttk.Frame(dialog, padding=(20, 18, 20, 18))
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text=message, style="Info.TLabel", wraplength=360).pack(
-            anchor="w", pady=(0, 12)
-        )
-        ttk.Button(frame, text="확인", command=dialog.destroy).pack(anchor="e")
-        dialog.update_idletasks()
-        dialog.geometry(
-            f"+{self.winfo_rootx() + 40}+{self.winfo_rooty() + 40}"
-        )
+        # 트레이에서 확인한 경우 GUI를 띄우지 않고 알림만
+        self._dispatch_notification("업데이트 확인", message)
 
     def _show_update_dialog(self, release: ReleaseInfo, message: str) -> None:
         if self._update_dialog is not None and self._update_dialog.winfo_exists():

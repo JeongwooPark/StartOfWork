@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.0
+# 출근 근태 자동 실행 (StartOfWork) v1.2.1
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.0
+**버전:** 1.2.1
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.
@@ -41,7 +41,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.0.exe`
+결과물: `dist\StartOfWorkSetup-1.2.1.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -61,7 +61,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.0.exe` (약 29MB).  
+결과물: `dist\StartOfWork.exe`, `dist\StartOfWork-1.2.1.exe` (약 29MB).  
 `config.json`, `StartOfWork.ico`를 exe와 **같은 폴더**에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -125,7 +125,7 @@ uv run python main.py
 - 시작 약 5초 후 GitHub Releases **latest**를 1회 확인 (`update_check_enabled`가 `true`일 때)
 - **매일 새벽 01:00**에 정기 확인 1회 (앱이 실행 중일 때)
 - 새 버전이 있으면 트레이 알림 표시
-- 트레이 메뉴 **업데이트 확인** → 다운로드·무인 설치·재시작
+- 트레이 메뉴 **업데이트 확인** → 결과를 **트레이 알림**으로 표시 (새 버전이면 설치 대화상자)
 - 설치 파일: `StartOfWorkSetup-{version}.exe` (Release에 첨부)
 - Release 본문에 SHA256이 있으면 다운로드 후 검증
 - `config.json`, 출근 상태, `chrome_profile/` 등 사용자 데이터는 설치 시 유지
@@ -219,6 +219,12 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.1
+
+- 트레이 **업데이트 확인** 결과를 GUI 대화상자 대신 **트레이 알림**으로 표시
+- 새 버전이 있을 때만 설치 대화상자 표시
+- 산출물: `StartOfWork-1.2.1.exe`, `StartOfWorkSetup-1.2.1.exe`
 
 ### v1.2.0
 
