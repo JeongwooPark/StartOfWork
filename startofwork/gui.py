@@ -17,8 +17,7 @@ from PIL import Image, ImageDraw
 from startofwork.attendance_state import (
     get_check_in_status_text,
     get_check_out_status_text,
-    load_last_check_in_date,
-    load_last_check_out_date,
+    get_monitor_attendance_snapshot,
 )
 from startofwork.browser import (
     is_checkout_job_running,
@@ -995,7 +994,18 @@ class LockStateMonitor(tk.Tk):
                 self.message_label.configure(text="자동 퇴근 시작 실패 — 로그 확인")
 
     def _update_check_out_display(self, now: datetime) -> None:
-        status = get_check_out_status_text(now.date())
+        self._apply_check_out_status(get_check_out_status_text(now.date()))
+
+    def _apply_check_in_status(self, status: str) -> None:
+        if status == self._check_in_status_text:
+            return
+        self._check_in_status_text = status
+        if self._is_ui_visible():
+            self.check_in_label.configure(text=status)
+            self._apply_window_title()
+        self._update_tray_title()
+
+    def _apply_check_out_status(self, status: str) -> None:
         if status == self._check_out_status_text:
             return
         self._check_out_status_text = status
@@ -1406,14 +1416,7 @@ class LockStateMonitor(tk.Tk):
 
     def _update_check_in_display(self, now: datetime) -> None:
         """GUI·타이틀·트레이 라벨에 오늘 출근체크 여부 표시"""
-        status = get_check_in_status_text(now.date())
-        if status == self._check_in_status_text:
-            return
-        self._check_in_status_text = status
-        if self._is_ui_visible():
-            self.check_in_label.configure(text=status)
-            self._apply_window_title()
-        self._update_tray_title()
+        self._apply_check_in_status(get_check_in_status_text(now.date()))
 
     def _apply_holiday_labels(self, status_text: str) -> None:
         self._holiday_info_text = status_text
@@ -1669,8 +1672,11 @@ class LockStateMonitor(tk.Tk):
         *,
         lock_state: Optional[bool],
         within: bool,
+        active_start: dt_time,
+        last_check_in: Optional[date],
+        last_check_out: Optional[date],
+        non_workday_reason: Optional[str],
     ) -> int:
-        active_start, _ = load_active_hours()
         checkout_enabled = bool(self.auto_checkout_enabled.get())
         checkout_time = self._get_selected_checkout_time()
         return next_poll_interval_ms(
@@ -1680,9 +1686,9 @@ class LockStateMonitor(tk.Tk):
             checkout_enabled=checkout_enabled,
             checkout_time=checkout_time,
             checkout_triggered_date=self._checkout_triggered_date,
-            non_workday_reason=get_non_workday_reason(now.date()),
-            last_check_in=load_last_check_in_date(),
-            last_check_out=load_last_check_out_date(),
+            non_workday_reason=non_workday_reason,
+            last_check_in=last_check_in,
+            last_check_out=last_check_out,
             active_start=active_start,
             update_check_enabled=load_update_check_enabled(),
         )
@@ -1723,12 +1729,22 @@ class LockStateMonitor(tk.Tk):
         ui_visible = self._is_ui_visible()
 
         self._update_holiday_display(now)
-        self._update_check_in_display(now)
-        self._update_check_out_display(now)
+
+        (
+            check_in_status,
+            check_out_status,
+            last_check_in,
+            last_check_out,
+            non_workday_reason,
+        ) = get_monitor_attendance_snapshot(today)
+        self._apply_check_in_status(check_in_status)
+        self._apply_check_out_status(check_out_status)
+
         self._maybe_run_auto_checkout(now)
         self._maybe_run_daily_update_check(now)
 
-        within = is_within_active_hours(now)
+        active_hours = load_active_hours()
+        within = is_within_active_hours(now, hours=active_hours)
         state = get_windows_lock_state()
         active_start_message = self._maybe_run_active_hours_start_check_in(
             now, within=within, lock_state=state
@@ -1777,7 +1793,13 @@ class LockStateMonitor(tk.Tk):
             self._last_ui_within_hours = within
 
         interval = self._next_monitor_interval_ms(
-            now, lock_state=state, within=within
+            now,
+            lock_state=state,
+            within=within,
+            active_start=active_hours[0],
+            last_check_in=last_check_in,
+            last_check_out=last_check_out,
+            non_workday_reason=non_workday_reason,
         )
         self.after_id = self.after(interval, self._update_monitor)
 

@@ -12,6 +12,7 @@ from typing import Optional
 import requests
 
 from startofwork.constants import HOLIDAY_API_URL, HOLIDAY_SERVICE_KEY
+from startofwork.json_io import atomic_write_json
 from startofwork.paths import HOLIDAY_CACHE_FILE
 
 # 같은 날 반복 조회 시 디스크/API 생략
@@ -111,10 +112,7 @@ def load_holiday_cache() -> dict:
 
 def save_holiday_cache(payload: dict) -> None:
     try:
-        HOLIDAY_CACHE_FILE.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(HOLIDAY_CACHE_FILE, payload)
     except Exception:
         logging.exception("공휴일 캐시 저장 실패")
 

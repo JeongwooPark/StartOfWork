@@ -8,6 +8,7 @@ import platform
 import sys
 
 from startofwork.constants import APP_TITLE
+from startofwork.config import ensure_app_config
 from startofwork.gui import LockStateMonitor
 from startofwork.paths import LOG_FILE, setup_logging
 from startofwork.single_instance import try_acquire_single_instance
@@ -35,6 +36,8 @@ def main() -> None:
         logging.warning("중복 실행 감지 — 종료")
         _show_already_running()
         sys.exit(0)
+
+    ensure_app_config()
 
     app = LockStateMonitor()
     app.mainloop()

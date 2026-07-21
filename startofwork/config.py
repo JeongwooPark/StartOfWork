@@ -13,6 +13,7 @@ from startofwork.constants import (
     DEFAULT_ATTENDANCE_URL,
     DEFAULT_AUTO_CHECKOUT_TIME,
 )
+from startofwork.json_io import atomic_write_json, backup_corrupt_file
 from startofwork.paths import CONFIG_FILE
 
 _DEFAULT_CONFIG = {
@@ -30,15 +31,20 @@ _config_cache: Optional[dict] = None
 _config_mtime_ns: Optional[int] = None
 _active_hours_cache: Optional[tuple[dt_time, dt_time]] = None
 _checkout_cache: Optional[tuple[bool, dt_time]] = None
+_update_check_cache: Optional[bool] = None
+_config_bootstrapped = False
 
 
 def clear_config_cache() -> None:
     """테스트/강제 재로드용."""
     global _config_cache, _config_mtime_ns, _active_hours_cache, _checkout_cache
+    global _update_check_cache, _config_bootstrapped
     _config_cache = None
     _config_mtime_ns = None
     _active_hours_cache = None
     _checkout_cache = None
+    _update_check_cache = None
+    _config_bootstrapped = False
 
 
 def normalize_credential(value: object) -> str:
@@ -73,10 +79,18 @@ def _file_mtime_ns() -> Optional[int]:
 
 
 def _invalidate_derived_caches() -> None:
-    global _active_hours_cache, _checkout_cache
+    global _active_hours_cache, _checkout_cache, _update_check_cache
     _active_hours_cache = None
     _checkout_cache = None
+    _update_check_cache = None
 
+
+def _config_cache_fresh(mtime: Optional[int]) -> bool:
+    return (
+        _config_cache is not None
+        and mtime is not None
+        and mtime == _config_mtime_ns
+    )
 
 def load_app_config() -> dict:
     global _config_cache, _config_mtime_ns
@@ -106,26 +120,30 @@ def load_app_config() -> dict:
 
 def save_app_config(data: dict) -> None:
     global _config_cache, _config_mtime_ns
-    CONFIG_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(CONFIG_FILE, data)
     _config_cache = dict(data)
     _config_mtime_ns = _file_mtime_ns()
     _invalidate_derived_caches()
 
 
 def ensure_app_config() -> dict:
+    global _config_bootstrapped
     try:
         data = load_app_config()
     except FileNotFoundError:
         data = dict(_DEFAULT_CONFIG)
         save_app_config(data)
+        _config_bootstrapped = True
         return data
     except Exception:
-        logging.exception("설정 파일 로드 실패 — 기본값으로 재생성")
+        logging.exception(
+            "설정 파일 로드 실패 — 손상본 백업 후 기본값으로 재생성"
+        )
+        backup_corrupt_file(CONFIG_FILE)
+        clear_config_cache()
         data = dict(_DEFAULT_CONFIG)
         save_app_config(data)
+        _config_bootstrapped = True
         return data
 
     changed = False
@@ -151,6 +169,7 @@ def ensure_app_config() -> dict:
             save_app_config(data)
         except Exception:
             logging.exception("설정 기본값 보강 저장 실패")
+    _config_bootstrapped = True
     return data
 
 
@@ -192,9 +211,24 @@ def has_login_credentials() -> bool:
 
 
 def has_app_setup() -> bool:
-    """근태 URL + 로그인 계정이 모두 있으면 True."""
-    return has_attendance_url() and has_login_credentials()
+    """근태 URL + 로그인 계정이 모두 있으면 True.
 
+    최초 1회만 ensure_app_config로 구버전 보강 후, 이후는 단일 config 조회로 판정한다.
+    """
+    if _config_bootstrapped:
+        try:
+            data = load_app_config()
+        except Exception:
+            data = ensure_app_config()
+    else:
+        data = ensure_app_config()
+
+    url = normalize_attendance_url(data.get("attendance_url", ""))
+    username = normalize_credential(data.get("username", ""))
+    password = str(data.get("password", "")).strip()
+    return not is_missing_attendance_url(url) and not is_missing_credentials(
+        username, password
+    )
 
 def save_login_credentials(username: str, password: str) -> None:
     username = normalize_credential(username)
@@ -270,7 +304,10 @@ def _normalize_active_range(
 
 def load_active_hours() -> tuple[dt_time, dt_time]:
     global _active_hours_cache
-    # mtime 변경 시 load_app_config가 derived 캐시를 비움
+    mtime = _file_mtime_ns()
+    if _active_hours_cache is not None and _config_cache_fresh(mtime):
+        return _active_hours_cache
+
     try:
         data = load_app_config()
     except Exception:
@@ -316,6 +353,10 @@ def save_active_hours(start: dt_time, end: dt_time) -> None:
 
 def load_auto_checkout_settings() -> tuple[bool, dt_time]:
     global _checkout_cache
+    mtime = _file_mtime_ns()
+    if _checkout_cache is not None and _config_cache_fresh(mtime):
+        return _checkout_cache
+
     try:
         data = load_app_config()
     except Exception:
@@ -357,19 +398,28 @@ def save_auto_checkout_settings(enabled: bool, checkout_time: dt_time) -> None:
 
 
 def load_update_check_enabled() -> bool:
+    global _update_check_cache
+    mtime = _file_mtime_ns()
+    if _update_check_cache is not None and _config_cache_fresh(mtime):
+        return _update_check_cache
+
     try:
         data = load_app_config()
     except Exception:
         logging.exception("업데이트 설정 로드 실패 — 기본값 사용")
         return True
-    return bool(data.get("update_check_enabled", True))
+
+    _update_check_cache = bool(data.get("update_check_enabled", True))
+    return _update_check_cache
 
 
 def save_update_check_enabled(enabled: bool) -> None:
+    global _update_check_cache
     try:
         data = ensure_app_config()
         data["update_check_enabled"] = bool(enabled)
         save_app_config(data)
+        _update_check_cache = bool(enabled)
         logging.info("업데이트 확인 설정 저장: enabled=%s", bool(enabled))
     except Exception:
         logging.exception("업데이트 확인 설정 저장 실패")

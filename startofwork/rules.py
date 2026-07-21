@@ -15,9 +15,13 @@ from startofwork.constants import DEFAULT_AUTO_CHECKOUT_TIME
 from startofwork.holidays import get_non_workday_reason
 
 
-def is_within_active_hours(now: Optional[datetime] = None) -> bool:
+def is_within_active_hours(
+    now: Optional[datetime] = None,
+    *,
+    hours: Optional[tuple[dt_time, dt_time]] = None,
+) -> bool:
     current = (now or datetime.now()).time()
-    start, end = load_active_hours()
+    start, end = hours if hours is not None else load_active_hours()
     return start <= current <= end
 
 

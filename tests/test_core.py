@@ -101,6 +101,36 @@ class TestConfigCredentials(unittest.TestCase):
                 self.assertEqual(data["attendance_url"], DEFAULT_ATTENDANCE_URL)
                 self.assertTrue(config.has_app_setup())
 
+    def test_has_app_setup_migrates_legacy_without_explicit_ensure(self) -> None:
+        from startofwork import config
+        from startofwork.constants import DEFAULT_ATTENDANCE_URL
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(
+                json.dumps({"username": "bob", "password": "pw"}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(config, "CONFIG_FILE", cfg):
+                config.clear_config_cache()
+                self.assertTrue(config.has_app_setup())
+                self.assertEqual(
+                    config.load_attendance_url(), DEFAULT_ATTENDANCE_URL
+                )
+
+    def test_corrupt_config_is_backed_up(self) -> None:
+        from startofwork import config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text("{not-json", encoding="utf-8")
+            with mock.patch.object(config, "CONFIG_FILE", cfg):
+                config.clear_config_cache()
+                data = config.ensure_app_config()
+                self.assertEqual(data["username"], "")
+                backups = list(Path(tmp).glob("config.json.corrupt.*"))
+                self.assertEqual(len(backups), 1)
+
     def test_active_hours_save_load(self) -> None:
         from startofwork import config
 
@@ -159,6 +189,20 @@ class TestAttendanceState(unittest.TestCase):
                     self.assertEqual(
                         attendance_state.load_last_check_in_date(), today
                     )
+
+
+class TestJsonIo(unittest.TestCase):
+    def test_atomic_write_json(self) -> None:
+        from startofwork.json_io import atomic_write_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data.json"
+            atomic_write_json(path, {"a": 1})
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")), {"a": 1}
+            )
+            leftovers = list(Path(tmp).glob(".data.json.*.tmp"))
+            self.assertEqual(leftovers, [])
 
 
 class TestRules(unittest.TestCase):
@@ -761,6 +805,7 @@ class TestImportsSmoke(unittest.TestCase):
             constants,
             gui,
             holidays,
+            json_io,
             lock_state,
             notifications,
             paths,
@@ -770,10 +815,11 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(startofwork, "main"))
         self.assertTrue(hasattr(gui, "LockStateMonitor"))
         self.assertTrue(hasattr(app, "main"))
+        self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.2.7")
-        self.assertEqual(startofwork.__version__, "1.2.7")
+        self.assertEqual(constants.APP_VERSION, "1.2.8")
+        self.assertEqual(startofwork.__version__, "1.2.8")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

@@ -3,7 +3,7 @@
 ; 또는: .\build.ps1 -Installer
 
 #define MyAppName "StartOfWork"
-#define MyAppVersion "1.2.7"
+#define MyAppVersion "1.2.8"
 #define MyAppPublisher "StartOfWork"
 #define MyAppExeName "StartOfWork.exe"
 
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=StartOfWorkSetup-1.2.7
+OutputBaseFilename=StartOfWorkSetup-1.2.8
 SetupIconFile=StartOfWork.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -36,11 +36,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 만들기"; GroupDescription: "추가 아이콘:"; Flags: unchecked
 
 [Files]
-; onedir 산출물 전체 (StartOfWork.exe + _internal 등)
-Source: "dist\StartOfWork\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; onedir 산출물 — 사용자 데이터(config/상태/캐시/프로필)는 절대 덮어쓰지 않음
+Source: "dist\StartOfWork\*"; DestDir: "{app}"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs; \
+    Excludes: "config.json,check_in_state.json,holiday_cache.json,lock_state_monitor.log,chrome_profile"
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 ; 최초 설치에만 빈 계정 config.json 생성 (기존 설정 덮어쓰지 않음)
-; 아이디/비밀번호는 첫 실행 시 프로그램 GUI에서 입력
 Source: "config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
 Source: "config.example.json"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -56,15 +57,15 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; \
     Flags: uninsdeletevalue
 
-; 완료 화면 체크박스는 [Code]에서 처리 (Inno [Run] 실패 시 안내 문구 커스터마이즈)
-; skipifsilent: /SILENT·/VERYSILENT 자동 업데이트 시에는 실행하지 않음(헬퍼가 재시작)
-
 [UninstallDelete]
 Type: files; Name: "{app}\lock_state_monitor.log"
 
 [Code]
 var
   LaunchAfterInstallCheck: TNewCheckBox;
+  UserConfigBackup: String;
+  UserStateBackup: String;
+  UserHolidayBackup: String;
 
 function IsReadmeRunItem(const Caption: String): Boolean;
 var
@@ -72,6 +73,39 @@ var
 begin
   UpperCap := UpperCase(Caption);
   Result := (Pos('README', UpperCap) > 0) or (Pos('설명서', Caption) > 0);
+end;
+
+procedure BackupUserDataFiles;
+begin
+  UserConfigBackup := ExpandConstant('{tmp}\StartOfWork_config.json.bak');
+  UserStateBackup := ExpandConstant('{tmp}\StartOfWork_check_in_state.json.bak');
+  UserHolidayBackup := ExpandConstant('{tmp}\StartOfWork_holiday_cache.json.bak');
+
+  if FileExists(ExpandConstant('{app}\config.json')) then
+    FileCopy(ExpandConstant('{app}\config.json'), UserConfigBackup, False);
+  if FileExists(ExpandConstant('{app}\check_in_state.json')) then
+    FileCopy(ExpandConstant('{app}\check_in_state.json'), UserStateBackup, False);
+  if FileExists(ExpandConstant('{app}\holiday_cache.json')) then
+    FileCopy(ExpandConstant('{app}\holiday_cache.json'), UserHolidayBackup, False);
+end;
+
+procedure RestoreUserDataFiles;
+begin
+  { 업그레이드 시 설치본이 사용자 설정을 덮어쓴 경우 복원 }
+  if (UserConfigBackup <> '') and FileExists(UserConfigBackup) then
+    FileCopy(UserConfigBackup, ExpandConstant('{app}\config.json'), False);
+  if (UserStateBackup <> '') and FileExists(UserStateBackup) then
+    FileCopy(UserStateBackup, ExpandConstant('{app}\check_in_state.json'), False);
+  if (UserHolidayBackup <> '') and FileExists(UserHolidayBackup) then
+    FileCopy(UserHolidayBackup, ExpandConstant('{app}\holiday_cache.json'), False);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    BackupUserDataFiles
+  else if CurStep = ssPostInstall then
+    RestoreUserDataFiles;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);

@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$AppVersion = "1.2.7"
+$AppVersion = "1.2.8"
 $AppDirName = "StartOfWork"
 $VersionedZipName = "StartOfWork-$AppVersion.zip"
 $VersionedSetupName = "StartOfWorkSetup-$AppVersion.exe"
@@ -214,6 +214,24 @@ if (-not $iscc) {
 
 if (Test-Path $distConfig) {
     Remove-Item -Force $distConfig
+}
+# 설치본에 섞이면 사용자 설정을 덮어쓸 수 있는 파일 제거
+@(
+    "check_in_state.json",
+    "holiday_cache.json",
+    "lock_state_monitor.log",
+    "config.json"
+) | ForEach-Object {
+    $p = Join-Path $DistAppDir $_
+    if (Test-Path $p) {
+        Remove-Item -Force $p
+        Write-Host "==> 설치 패키지에서 제외: $_"
+    }
+}
+$chromeProfile = Join-Path $DistAppDir "chrome_profile"
+if (Test-Path $chromeProfile) {
+    Remove-Item -Recurse -Force $chromeProfile
+    Write-Host "==> 설치 패키지에서 제외: chrome_profile"
 }
 
 Write-Host "==> Inno Setup 설치 파일 생성 ($VersionedSetupName)"

@@ -56,6 +56,7 @@ hiddenimports = [
     "startofwork.single_instance",
     "startofwork.notifications",
     "startofwork.updater",
+    "startofwork.json_io",
     "pystray._win32",
     "PIL.IcoImagePlugin",
     "PIL.PngImagePlugin",
