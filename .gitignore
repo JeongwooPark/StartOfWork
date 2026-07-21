@@ -9,3 +9,8 @@ check_in_state.json
 holiday_cache.json
 chrome_profile/
 config.json
+# 코드 서명 개인키 (공개 .cer 만 커밋 가능)
+certs/*.pfx
+certs/*.p12
+certs/pfx.password
+certs/*.key

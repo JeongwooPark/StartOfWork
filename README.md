@@ -1,13 +1,14 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.6
+# 출근 근태 자동 실행 (StartOfWork) v1.2.7
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.6
+**버전:** 1.2.7
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
-> **1.2.6부터** PyInstaller **onedir**(폴더 배포)로 빌드합니다. onefile의 `%TEMP%\_MEIxxxx` 추출을 피해 Smart App Control 차단 위험을 줄입니다.
+> **1.2.6부터** PyInstaller **onedir**(폴더 배포)로 빌드합니다. onefile의 `%TEMP%\_MEIxxxx` 추출을 피해 Smart App Control 차단 위험을 줄입니다.  
+> **1.2.7부터** 빌드 산출물(앱·Setup)에 **자체 코드 서명**을 적용합니다. (`certs\`, `.\build.ps1`)
 
 ## 주요 기능
 
@@ -42,7 +43,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.6.exe`
+결과물: `dist\StartOfWorkSetup-1.2.7.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -62,7 +63,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` (exe + `_internal` 등), `dist\StartOfWork-1.2.6.zip`.  
+결과물: `dist\StartOfWork\` (exe + `_internal` 등), `dist\StartOfWork-1.2.7.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -73,6 +74,18 @@ uv sync
 ```
 
 > **참고:** 1.2.4 이하 단일 exe(onefile) 배포는 종료했습니다. 스마트 앱 컨트롤이 `%TEMP%`의 Setup을 막는 경우는 별도 이슈이며, 설치본을 브라우저로 받아 직접 실행하거나 시작 메뉴에서 실행하세요.
+
+### 코드 서명 (1.2.7+)
+
+```powershell
+.\scripts\New-CodeSigningCert.ps1   # 최초 1회 (없으면 build가 자동 생성)
+.\build.ps1 -Installer              # onedir + Setup에 Authenticode 서명
+```
+
+- 비밀키: `certs\StartOfWorkCodeSign.pfx` (gitignore)
+- 공개 인증서: `certs\StartOfWorkCodeSign.cer` — 다른 PC에서 Trusted Publisher/Root에 설치하면 로컬 신뢰에 도움
+- 자체 서명은 상용 CA만큼 SAC를 통과시키지 못할 수 있습니다. 자세한 내용은 `certs\README.md` 참고.
+
 ## 소스에서 실행
 
 ```powershell
@@ -222,6 +235,13 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.7
+
+- 자체 코드 서명 인증서 생성 스크립트 (`scripts\New-CodeSigningCert.ps1`)
+- `build.ps1`이 onedir exe/DLL 및 Setup에 Authenticode(SHA256) 서명
+- 공개 CER 배포·Trusted Publisher 설치 안내 (`certs\README.md`)
+- 산출물: `StartOfWorkSetup-1.2.7.exe`, `StartOfWork-1.2.7.zip`
 
 ### v1.2.6
 
