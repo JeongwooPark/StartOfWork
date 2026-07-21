@@ -23,7 +23,7 @@ _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 _kernel32.CloseHandle.restype = wintypes.BOOL
 
 
-def try_acquire_single_instance() -> bool:
+def try_acquire_single_instance(mutex_name: Optional[str] = None) -> bool:
     """
     이미 실행 중이면 False, 처음이면 Mutex를 보유하고 True.
     반환된 Mutex 핸들은 프로세스 종료까지 유지해야 한다.
@@ -33,8 +33,9 @@ def try_acquire_single_instance() -> bool:
     if _mutex_handle:
         return True
 
+    name = mutex_name or MUTEX_NAME
     ctypes.set_last_error(0)
-    handle = _kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    handle = _kernel32.CreateMutexW(None, False, name)
     if not handle:
         logging.error(
             "단일 인스턴스 Mutex 생성 실패 (err=%s)",

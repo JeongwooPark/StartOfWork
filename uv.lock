@@ -443,8 +443,7 @@ wheels = [
 
 [[package]]
 name = "startofwork"
-version = "1.1.0"
-source = { virtual = "." }
+version = "1.2.6"
 dependencies = [
     { name = "pillow" },
     { name = "pystray" },

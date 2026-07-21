@@ -735,15 +735,16 @@ class TestSingleInstance(unittest.TestCase):
     def test_second_acquire_fails(self) -> None:
         from startofwork import single_instance as si
 
+        test_mutex = "Local\\StartOfWork_SingleInstance_TestOnly"
         si.release_single_instance()
-        self.assertTrue(si.try_acquire_single_instance())
+        self.assertTrue(si.try_acquire_single_instance(test_mutex))
         # 동일 프로세스에서 다시 호출하면 이미 보유 중이므로 True
-        self.assertTrue(si.try_acquire_single_instance())
+        self.assertTrue(si.try_acquire_single_instance(test_mutex))
 
         # 핸들을 비운 뒤 새로 CreateMutex하면 ALREADY_EXISTS
         handle = si._mutex_handle
         si._mutex_handle = None
-        self.assertFalse(si.try_acquire_single_instance())
+        self.assertFalse(si.try_acquire_single_instance(test_mutex))
         # 정리: 원래 핸들 복구 후 해제
         si._mutex_handle = handle
         si.release_single_instance()
@@ -771,8 +772,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(app, "main"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.2.4")
-        self.assertEqual(startofwork.__version__, "1.2.4")
+        self.assertEqual(constants.APP_VERSION, "1.2.6")
+        self.assertEqual(startofwork.__version__, "1.2.6")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

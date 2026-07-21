@@ -3,7 +3,7 @@
 ; 또는: .\build.ps1 -Installer
 
 #define MyAppName "StartOfWork"
-#define MyAppVersion "1.2.4"
+#define MyAppVersion "1.2.6"
 #define MyAppPublisher "StartOfWork"
 #define MyAppExeName "StartOfWork.exe"
 
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=StartOfWorkSetup-1.2.4
+OutputBaseFilename=StartOfWorkSetup-1.2.6
 SetupIconFile=StartOfWork.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -35,8 +35,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 만들기"; GroupDescription: "추가 아이콘:"; Flags: unchecked
 
 [Files]
-Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\StartOfWork.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; onedir 산출물 전체 (StartOfWork.exe + _internal 등)
+Source: "dist\StartOfWork\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 ; 최초 설치에만 빈 계정 config.json 생성 (기존 설정 덮어쓰지 않음)
 ; 아이디/비밀번호는 첫 실행 시 프로그램 GUI에서 입력

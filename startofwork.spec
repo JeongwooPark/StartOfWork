@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""사이즈를 줄인 Windows 실행 파일 빌드 설정 (onefile)."""
+"""Windows 실행 파일 빌드 설정 (onedir).
+
+onefile은 실행마다 %TEMP%\\_MEIxxxx 에 DLL을 풀어 Smart App Control에
+막히기 쉬우므로, 설치 폴더에 런타임을 두는 onedir을 사용한다.
+"""
 
 from pathlib import Path
 
@@ -51,6 +55,7 @@ hiddenimports = [
     "startofwork.constants",
     "startofwork.single_instance",
     "startofwork.notifications",
+    "startofwork.updater",
     "pystray._win32",
     "PIL.IcoImagePlugin",
     "PIL.PngImagePlugin",
@@ -108,17 +113,13 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="StartOfWork",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -126,4 +127,15 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(icon_file),
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="StartOfWork",
 )
