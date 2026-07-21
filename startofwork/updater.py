@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 import re
-import subprocess
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -272,11 +272,26 @@ def _ps_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _prepare_setup_for_install(setup_path: Path) -> Path:
+    """Temp 다운로드본을 설치 폴더 쪽으로 복사해 실행 정책을 완화한다."""
+    setup_path = setup_path.resolve()
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
+        return setup_path
+    pending_dir = Path(local_app_data) / "StartOfWork" / "PendingUpdate"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    dest = pending_dir / setup_path.name
+    if dest.resolve() != setup_path:
+        shutil.copy2(setup_path, dest)
+    return dest
+
+
 def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> None:
     """앱 종료 후 Setup을 실행하는 독립 프로세스를 띄운다.
 
-    배치+timeout은 창 없는 환경에서 즉시 실패하고, 부모 종료 시 자식이
-    함께 죽는 경우가 있어 PowerShell을 start로 분리 실행한다.
+    부모(StartOfWork) job/프로세스 트리와 분리하기 위해 ShellExecute로
+    PowerShell 헬퍼만 기동한다. 중첩 Start-Process+DETACHED 는 자식이
+    앱 종료와 함께 죽거나 Setup UI가 안 뜨는 경우가 있다.
     """
     setup_path = setup_path.resolve()
     if not setup_path.is_file():
@@ -287,14 +302,15 @@ def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> N
     script_dir = get_update_download_dir()
     ps1_path = script_dir / "apply_update.ps1"
     log_path = script_dir / "update.log"
+    install_setup = _prepare_setup_for_install(setup_path)
 
     # /SILENT: 진행 창만 표시 (VERYSILENT는 UI가 없어 실패처럼 보임)
     # CLOSEAPPLICATIONS: 잠긴 exe 교체 유도
     script = "\n".join(
         [
-            "$ErrorActionPreference = 'Continue'",
+            "$ErrorActionPreference = 'Stop'",
             f"$targetPid = {int(current_pid)}",
-            f"$setup = {_ps_single_quote(str(setup_path))}",
+            f"$setup = {_ps_single_quote(str(install_setup))}",
             f"$exe = {_ps_single_quote(str(installed_exe))}",
             f"$log = {_ps_single_quote(str(log_path))}",
             "function Write-UpdateLog([string]$Message) {",
@@ -304,27 +320,46 @@ def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> N
             "Write-UpdateLog ('start pid=' + $targetPid)",
             "Write-UpdateLog ('setup=' + $setup)",
             "$waited = 0",
-            "while ($waited -lt 120) {",
-            "  $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue",
-            "  if ($null -eq $proc) { break }",
+            "while ($waited -lt 180) {",
+            "  $alive = $false",
+            "  if ($targetPid -gt 0) {",
+            "    $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue",
+            "    if ($null -ne $proc) { $alive = $true }",
+            "  }",
+            "  $others = @(Get-Process -Name 'StartOfWork' -ErrorAction SilentlyContinue |"
+            " Where-Object { $_.Id -ne $PID })",
+            "  if ($others.Count -gt 0) { $alive = $true }",
+            "  if (-not $alive) { break }",
             "  Start-Sleep -Seconds 1",
             "  $waited++",
             "}",
             "Write-UpdateLog ('app exited after ' + $waited + 's')",
-            "Start-Sleep -Seconds 2",
+            "Start-Sleep -Seconds 3",
             "if (-not (Test-Path -LiteralPath $setup)) {",
             "  Write-UpdateLog 'setup file missing'",
             "  exit 1",
             "}",
+            "try { Unblock-File -LiteralPath $setup -ErrorAction SilentlyContinue } catch {}",
             "Write-UpdateLog 'launching setup'",
             "$setupArgs = @('/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS')",
-            "$p = Start-Process -FilePath $setup -ArgumentList $setupArgs -PassThru -Wait",
-            "Write-UpdateLog ('setup exitCode=' + $p.ExitCode)",
-            "if ($p.ExitCode -ne 0) { exit $p.ExitCode }",
+            "$workDir = Split-Path -Parent $setup",
+            "try {",
+            "  $p = Start-Process -FilePath $setup -ArgumentList $setupArgs"
+            " -WorkingDirectory $workDir -PassThru -Wait",
+            "  if ($null -eq $p) {",
+            "    Write-UpdateLog 'setup Start-Process returned null'",
+            "    exit 1",
+            "  }",
+            "  Write-UpdateLog ('setup exitCode=' + $p.ExitCode)",
+            "  if ($p.ExitCode -ne 0) { exit $p.ExitCode }",
+            "} catch {",
+            "  Write-UpdateLog ('setup launch error: ' + $_.Exception.Message)",
+            "  exit 1",
+            "}",
             "Start-Sleep -Seconds 1",
             "if (Test-Path -LiteralPath $exe) {",
             "  Write-UpdateLog 'restarting app'",
-            "  Start-Process -FilePath $exe",
+            "  Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)",
             "} else {",
             "  Write-UpdateLog 'installed exe missing'",
             "}",
@@ -333,54 +368,33 @@ def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> N
     )
     ps1_path.write_text(script + "\n", encoding="utf-8")
 
-    # cmd `start "Title"` 는 환경에 따라 Title을 실행 경로로 오인할 수 있음
-    # (오류: '\StartOfWorkUpdate\'을(를) 찾을 수 없습니다)
-    # PowerShell Start-Process 로 완전 분리 기동한다.
-    CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    DETACHED_PROCESS = 0x00000008
-    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-    creationflags = (
-        CREATE_NO_WINDOW
-        | CREATE_NEW_PROCESS_GROUP
-        | DETACHED_PROCESS
-        | CREATE_BREAKAWAY_FROM_JOB
-    )
+    if sys.platform != "win32":
+        raise UpdateError("Windows에서만 업데이트를 적용할 수 있습니다.")
 
-    # 바깥 PowerShell이 즉시 반환되도록 Start-Process만 호출
-    outer = (
-        "Start-Process -FilePath 'powershell.exe' "
-        "-ArgumentList @("
-        "'-NoProfile',"
-        "'-ExecutionPolicy',"
-        "'Bypass',"
-        "'-WindowStyle',"
-        "'Hidden',"
-        "'-File',"
-        f"{_ps_single_quote(str(ps1_path))}"
-        ") -WindowStyle Hidden"
+    # ShellExecute: 현재 프로세스의 자식/job에 묶이지 않음 → 앱 종료 후에도 생존
+    import ctypes
+
+    params = (
+        "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden "
+        f"-File {_ps_single_quote(str(ps1_path))}"
     )
-    subprocess.Popen(
-        [
+    rc = int(
+        ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "open",
             "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            outer,
-        ],
-        creationflags=creationflags if sys.platform == "win32" else 0,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
+            params,
+            str(script_dir),
+            0,  # SW_HIDE
+        )
     )
+    if rc <= 32:
+        raise UpdateError(f"업데이트 헬퍼 기동 실패 (ShellExecute={rc})")
     logging.info(
-        "업데이트 설치 스크립트 시작: pid=%s setup=%s log=%s",
+        "업데이트 설치 스크립트 시작: pid=%s setup=%s helper=%s log=%s",
         current_pid,
-        setup_path,
+        install_setup,
+        ps1_path,
         log_path,
     )
 

@@ -3,7 +3,7 @@
 ; 또는: .\build.ps1 -Installer
 
 #define MyAppName "StartOfWork"
-#define MyAppVersion "1.2.8"
+#define MyAppVersion "1.2.9"
 #define MyAppPublisher "StartOfWork"
 #define MyAppExeName "StartOfWork.exe"
 
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=StartOfWorkSetup-1.2.8
+OutputBaseFilename=StartOfWorkSetup-1.2.9
 SetupIconFile=StartOfWork.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -39,7 +39,7 @@ Name: "desktopicon"; Description: "바탕화면 바로가기 만들기"; GroupDe
 ; onedir 산출물 — 사용자 데이터(config/상태/캐시/프로필)는 절대 덮어쓰지 않음
 Source: "dist\StartOfWork\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "config.json,check_in_state.json,holiday_cache.json,lock_state_monitor.log,chrome_profile"
+    Excludes: "config.json,check_in_state.json,holiday_cache.json,lock_state_monitor.log,chrome_profile,PendingUpdate"
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 ; 최초 설치에만 빈 계정 config.json 생성 (기존 설정 덮어쓰지 않음)
 Source: "config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist

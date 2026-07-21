@@ -1,15 +1,16 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.8
+# 출근 근태 자동 실행 (StartOfWork) v1.2.9
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.8
+**버전:** 1.2.9
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
 > **1.2.6부터** PyInstaller **onedir**(폴더 배포)로 빌드합니다. onefile의 `%TEMP%\_MEIxxxx` 추출을 피해 Smart App Control 차단 위험을 줄입니다.  
-> **1.2.7부터** 빌드 산출물(앱·Setup)에 **자체 코드 서명**을 적용합니다. (`certs\`, `.\build.ps1`)
-> **1.2.8부터** 업데이트·재설치 시 `config.json` 등 사용자 설정을 보존합니다.
+> **1.2.7부터** 빌드 산출물(앱·Setup)에 **자체 코드 서명**을 적용합니다. (`certs\`, `.\build.ps1`)  
+> **1.2.8부터** 업데이트·재설치 시 `config.json` 등 사용자 설정을 보존합니다.  
+> **1.2.9부터** 업데이트 헬퍼를 ShellExecute로 분리 기동해 앱 종료 후에도 Setup이 실행됩니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -43,7 +44,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.8.exe`
+결과물: `dist\StartOfWorkSetup-1.2.9.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -63,7 +64,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` (exe + `_internal` 등), `dist\StartOfWork-1.2.8.zip`.  
+결과물: `dist\StartOfWork\` (exe + `_internal` 등), `dist\StartOfWork-1.2.9.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -235,6 +236,14 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.9
+
+- 자동 업데이트 설치 헬퍼 기동 방식 수정
+  - 중첩 PowerShell/`DETACHED_PROCESS` 대신 `ShellExecute`로 `apply_update.ps1` 분리 실행
+  - Setup을 `%LOCALAPPDATA%\StartOfWork\PendingUpdate`로 복사 후 실행
+  - Setup 기동 실패 시 `update.log`에 오류 메시지 기록
+- 산출물: `StartOfWorkSetup-1.2.9.exe`, `StartOfWork-1.2.9.zip`
 
 ### v1.2.8
 

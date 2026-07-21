@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -185,6 +186,60 @@ class TestUpdateConfig(unittest.TestCase):
                 self.assertTrue(config.load_update_check_enabled())
                 config.save_update_check_enabled(False)
                 self.assertFalse(config.load_update_check_enabled())
+
+    def test_prepare_setup_for_install_copies_to_pending(self) -> None:
+        from startofwork.updater import _prepare_setup_for_install
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "StartOfWorkSetup-9.9.9.exe"
+            src.write_bytes(b"setup")
+            local = Path(tmp) / "LocalAppData"
+            local.mkdir()
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+                dest = _prepare_setup_for_install(src)
+            self.assertEqual(
+                dest, local / "StartOfWork" / "PendingUpdate" / src.name
+            )
+            self.assertTrue(dest.is_file())
+            self.assertEqual(dest.read_bytes(), b"setup")
+
+    def test_launch_update_installer_uses_shell_execute(self) -> None:
+        from startofwork.updater import launch_update_installer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            setup = Path(tmp) / "StartOfWorkSetup-9.9.9.exe"
+            setup.write_bytes(b"setup")
+            local = Path(tmp) / "LocalAppData"
+            local.mkdir()
+            update_dir = Path(tmp) / "Update"
+            update_dir.mkdir()
+
+            fake_shell = mock.Mock()
+            fake_shell.ShellExecuteW.return_value = 42
+            fake_ctypes = mock.Mock()
+            fake_ctypes.windll.shell32 = fake_shell
+
+            with (
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}),
+                mock.patch(
+                    "startofwork.updater.get_update_download_dir",
+                    return_value=update_dir,
+                ),
+                mock.patch.dict(sys.modules, {"ctypes": fake_ctypes}),
+                mock.patch("sys.platform", "win32"),
+            ):
+                launch_update_installer(setup, pid=12345)
+
+            ps1 = update_dir / "apply_update.ps1"
+            self.assertTrue(ps1.is_file())
+            text = ps1.read_text(encoding="utf-8")
+            self.assertIn("PendingUpdate", text)
+            self.assertIn("setup launch error", text)
+            self.assertIn("$targetPid = 12345", text)
+            fake_shell.ShellExecuteW.assert_called_once()
+            args = fake_shell.ShellExecuteW.call_args[0]
+            self.assertEqual(args[2], "powershell.exe")
+            self.assertIn("apply_update.ps1", args[3])
 
 
 if __name__ == "__main__":

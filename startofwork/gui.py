@@ -1359,7 +1359,8 @@ class LockStateMonitor(tk.Tk):
             dialog.destroy()
             self._update_dialog = None
             self._update_busy = False
-            self.after(800, self._quit_application)
+            # 헬퍼(ShellExecute)가 뜨고 PID 대기를 시작하도록 짧게 여유
+            self.after(2000, self._quit_application)
 
         download_button.configure(command=_on_download)
         install_button.configure(command=_on_install)
