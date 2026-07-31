@@ -25,8 +25,9 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; 대화형 설치용. 자동 업데이트는 업데이터가 메인을 종료한 뒤 /NOCLOSEAPPLICATIONS 사용
-CloseApplications=yes
+; 업그레이드 시 이미 종료된/응답 없는 프로세스 대기(「응용 프로그램을 닫는 중」)를 막음.
+; 자동 업데이트는 업데이터가 메인을 종료한 뒤 /NOCLOSEAPPLICATIONS도 사용.
+CloseApplications=no
 ; Setup.exe 서명은 build.ps1이 빌드 후 signtool로 적용합니다.
 
 [Languages]

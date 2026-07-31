@@ -16,7 +16,7 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 > **1.2.12부터** 업데이터를 `%LOCALAPPDATA%\StartOfWorkUpdater`에 분리 설치해 TEMP 복사·용량을 줄입니다.  
 > **1.2.13부터** 업데이터는 `startofwork`(GUI/pystray)를 import하지 않습니다.  
 > **1.2.14부터** 비밀번호는 Windows Credential Manager에 저장하고, 출퇴근은 DOM/서버 검증 후에만 기록합니다.  
-> **1.2.15부터** 자동 업데이트 Setup은 `/NOCLOSEAPPLICATIONS`로 실행해 이미 종료된 메인에 대한 대기·exit=5를 막습니다.
+> **1.2.15부터** Setup은 앱을 강제 종료 대기하지 않으며(`CloseApplications=no`), 자동 업데이트는 `/NOCLOSEAPPLICATIONS`로 실행합니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -254,11 +254,10 @@ winget install JRSoftware.InnoSetup
 
 ### v1.2.15
 
-- 자동 업데이트 설치 실패(`exit=5`) 수정
-  - 업데이터가 메인을 이미 종료한 뒤 Setup에 `/CLOSEAPPLICATIONS`를 넘겨, 없는/응답 없는 앱 종료를 기다리다 `/SUPPRESSMSGBOXES` Abort로 끝나던 문제
-  - Setup 인자를 `/NOCLOSEAPPLICATIONS`로 변경
-  - 남은 `chromedriver`·StartOfWork `chrome_profile` Chrome도 정리
-- **1.2.14**에서 업데이트 설치가 실패한 경우: 이 Setup을 **수동 설치**하세요
+- 자동·수동 업데이트 설치 시 「응용 프로그램을 닫는 중」대기/실패(`exit=5`) 수정
+  - Setup: `CloseApplications=no` (이미 종료된 메인·고아 Chrome 종료 대기 제거)
+  - 업데이터: `/NOCLOSEAPPLICATIONS` + chromedriver/전용 Chrome 정리
+- **1.2.13~1.2.14**에서 업데이트가 막힌 경우: 이 Setup을 **수동 설치**하세요
 - 산출물: `StartOfWorkSetup-1.2.15.exe`, `StartOfWork-1.2.15.zip`
 
 ### v1.2.14
