@@ -190,6 +190,65 @@ class TestAttendanceState(unittest.TestCase):
                         attendance_state.load_last_check_in_date(), today
                     )
 
+    def test_tray_status_prefers_checkout_and_resets_by_day(self) -> None:
+        from startofwork import attendance_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "check_in_state.json"
+            with mock.patch.object(attendance_state, "CHECK_IN_STATE_FILE", state_file):
+                attendance_state.clear_check_in_state_cache()
+                with mock.patch(
+                    "startofwork.attendance_state.get_non_workday_reason",
+                    return_value=None,
+                ):
+                    day = date(2026, 7, 15)
+                    next_day = date(2026, 7, 16)
+                    self.assertEqual(
+                        attendance_state.get_tray_status_text(day),
+                        "출근체크: 미완료",
+                    )
+                    attendance_state.save_check_in_date(day)
+                    self.assertTrue(
+                        attendance_state.get_tray_status_text(day).startswith(
+                            "출근체크: 완료"
+                        )
+                    )
+                    attendance_state.save_check_out_date(day)
+                    self.assertTrue(
+                        attendance_state.get_tray_status_text(day).startswith(
+                            "퇴근체크: 완료"
+                        )
+                    )
+                    self.assertEqual(
+                        attendance_state.get_tray_status_text(next_day),
+                        "출근체크: 미완료",
+                    )
+
+    def test_tray_and_status_holiday_message(self) -> None:
+        from startofwork import attendance_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "check_in_state.json"
+            with mock.patch.object(attendance_state, "CHECK_IN_STATE_FILE", state_file):
+                attendance_state.clear_check_in_state_cache()
+                holiday = date(2026, 7, 17)
+                with mock.patch(
+                    "startofwork.attendance_state.get_non_workday_reason",
+                    return_value="공휴일(제헌절)",
+                ):
+                    self.assertEqual(
+                        attendance_state.get_tray_status_text(holiday),
+                        "공휴일로 체크하지 않음",
+                    )
+                    self.assertEqual(
+                        attendance_state.get_check_in_status_text(holiday),
+                        "공휴일로 체크하지 않음",
+                    )
+                    self.assertEqual(
+                        attendance_state.get_check_out_status_text(holiday),
+                        "공휴일로 체크하지 않음",
+                    )
+
 
 class TestJsonIo(unittest.TestCase):
     def test_atomic_write_json(self) -> None:
@@ -818,8 +877,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.2.9")
-        self.assertEqual(startofwork.__version__, "1.2.9")
+        self.assertEqual(constants.APP_VERSION, "1.2.10")
+        self.assertEqual(startofwork.__version__, "1.2.10")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

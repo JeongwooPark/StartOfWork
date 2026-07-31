@@ -151,6 +151,12 @@ def save_check_out_date(day: date) -> bool:
         return False
 
 
+def _non_workday_status_text(reason: str) -> str:
+    if reason.startswith("공휴일"):
+        return "공휴일로 체크하지 않음"
+    return f"대상 아님 ({reason})"
+
+
 def _status_from_state(
     state: dict,
     day: date,
@@ -160,7 +166,7 @@ def _status_from_state(
     non_workday_reason: Optional[str],
 ) -> str:
     if non_workday_reason is not None:
-        return f"대상 아님 ({non_workday_reason})"
+        return _non_workday_status_text(non_workday_reason)
 
     last = _parse_state_date(state.get(date_key))
     if last == day:
@@ -202,6 +208,33 @@ def get_check_out_status_text(today: Optional[date] = None) -> str:
         date_key="last_check_out_date",
         time_key="last_check_out_at",
     )
+
+
+def get_tray_status_text(today: Optional[date] = None) -> str:
+    """트레이 툴팁용 요약: 퇴근 > 출근 > 미완료, 비근무일은 체크 생략 안내."""
+    day = today or date.today()
+    reason = get_non_workday_reason(day, force_refresh=False)
+    if reason is not None:
+        if reason.startswith("공휴일"):
+            return "공휴일로 체크하지 않음"
+        return f"{reason} — 체크하지 않음"
+
+    state = peek_check_in_state()
+    last_out = _parse_state_date(state.get("last_check_out_date"))
+    if last_out == day:
+        checked_time = format_check_in_time(state.get("last_check_out_at"))
+        if checked_time:
+            return f"퇴근체크: 완료 ({checked_time})"
+        return "퇴근체크: 완료"
+
+    last_in = _parse_state_date(state.get("last_check_in_date"))
+    if last_in == day:
+        checked_time = format_check_in_time(state.get("last_check_in_at"))
+        if checked_time:
+            return f"출근체크: 완료 ({checked_time})"
+        return "출근체크: 완료"
+
+    return "출근체크: 미완료"
 
 
 def get_monitor_attendance_snapshot(

@@ -18,6 +18,7 @@ from startofwork.attendance_state import (
     get_check_in_status_text,
     get_check_out_status_text,
     get_monitor_attendance_snapshot,
+    get_tray_status_text,
 )
 from startofwork.browser import (
     is_checkout_job_running,
@@ -187,6 +188,7 @@ class LockStateMonitor(tk.Tk):
         self._holiday_info_text = "확인 중"
         self._check_in_status_text = "확인 중"
         self._check_out_status_text = "확인 중"
+        self._attendance_summary_text = "확인 중"
         self._checkout_triggered_date: Optional[date] = None
         self._login_setup_dialog: Optional[tk.Toplevel] = None
         self._login_verifying = False
@@ -1002,8 +1004,7 @@ class LockStateMonitor(tk.Tk):
         self._check_in_status_text = status
         if self._is_ui_visible():
             self.check_in_label.configure(text=status)
-            self._apply_window_title()
-        self._update_tray_title()
+        self._refresh_attendance_summary()
 
     def _apply_check_out_status(self, status: str) -> None:
         if status == self._check_out_status_text:
@@ -1011,15 +1012,26 @@ class LockStateMonitor(tk.Tk):
         self._check_out_status_text = status
         if self._is_ui_visible():
             self.check_out_label.configure(text=status)
+        self._refresh_attendance_summary()
+
+    def _refresh_attendance_summary(self, today: Optional[date] = None) -> None:
+        """창 제목·트레이 툴팁용 출퇴근 요약 갱신 (퇴근 우선, 자정·공휴일 반영)."""
+        summary = get_tray_status_text(today)
+        if summary == self._attendance_summary_text:
+            return
+        self._attendance_summary_text = summary
+        if self._is_ui_visible():
+            self._apply_window_title()
+        self._update_tray_title()
 
     def _apply_window_title(self) -> None:
-        """윈도우 타이틀에 앱 이름과 출근체크 여부 표시"""
+        """윈도우 타이틀에 앱 이름과 출퇴근 요약 표시"""
         self.title(self._status_label_text())
 
     def _status_label_text(self) -> str:
-        """창 제목·트레이 라벨에 사용하는 텍스트"""
+        """창 제목·트레이 툴팁에 사용하는 텍스트"""
         return (
-            f"{APP_TITLE} v{APP_VERSION} - 출근체크: {self._check_in_status_text}"
+            f"{APP_TITLE} v{APP_VERSION} - {self._attendance_summary_text}"
         )
 
     def _try_startup_update_check(self) -> None:
@@ -1378,7 +1390,7 @@ class LockStateMonitor(tk.Tk):
         )
 
     def _update_tray_title(self) -> None:
-        """트레이 아이콘 툴팁에 출근체크 여부 반영"""
+        """트레이 아이콘 툴팁에 출퇴근 요약 반영"""
         icon = self._tray_icon
         if icon is None:
             return
@@ -1439,7 +1451,10 @@ class LockStateMonitor(tk.Tk):
         self._holiday_refresh_running = False
         self._holiday_info_date = today
         self._apply_holiday_labels(status_text)
-        self._update_check_in_display(datetime.now())
+        now = datetime.now()
+        self._update_check_in_display(now)
+        self._update_check_out_display(now)
+        self._refresh_attendance_summary(today)
         logging.info("공휴일 GUI 갱신 완료 — 사유: %s — %s", reason, status_text)
 
     def _schedule_holiday_refresh(self, *, force: bool, reason: str) -> None:
@@ -1726,6 +1741,10 @@ class LockStateMonitor(tk.Tk):
         if self._last_monitor_date != today:
             self._last_monitor_date = today
             self._checkout_triggered_date = None
+            # 자정 경과 시 전일 완료 문구가 남지 않도록 요약·라벨을 강제 갱신
+            self._check_in_status_text = ""
+            self._check_out_status_text = ""
+            self._attendance_summary_text = ""
 
         ui_visible = self._is_ui_visible()
 
@@ -1740,6 +1759,8 @@ class LockStateMonitor(tk.Tk):
         ) = get_monitor_attendance_snapshot(today)
         self._apply_check_in_status(check_in_status)
         self._apply_check_out_status(check_out_status)
+        # 출·퇴근 문구가 같아 early-return 된 경우에도 요약(우선순위)은 맞춤
+        self._refresh_attendance_summary(today)
 
         self._maybe_run_auto_checkout(now)
         self._maybe_run_daily_update_check(now)
@@ -1826,14 +1847,17 @@ class LockStateMonitor(tk.Tk):
         if self._tray_icon is not None:
             return
 
-        # 최신 출근체크 상태를 반영한 뒤 트레이 라벨 생성
+        # 최신 출퇴근 요약을 반영한 뒤 트레이 라벨 생성
+        self._attendance_summary_text = get_tray_status_text()
         self._check_in_status_text = get_check_in_status_text()
+        self._check_out_status_text = get_check_out_status_text()
         self.check_in_label.configure(text=self._check_in_status_text)
+        self.check_out_label.configure(text=self._check_out_status_text)
         self._apply_window_title()
 
         menu = pystray.Menu(
             pystray.MenuItem(
-                f"출근체크: {self._check_in_status_text}",
+                lambda item: self._attendance_summary_text,
                 lambda icon, item: None,
                 enabled=False,
             ),
