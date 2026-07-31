@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""독립형 StartOfWorkUpdater (onedir). tkinter + urllib 위주."""
+"""독립형 StartOfWorkUpdater (onedir). startofwork 패키지 비포함."""
 
 from pathlib import Path
 
@@ -33,24 +33,14 @@ excludes = [
     "requests",
     "charset_normalizer",
     "idna",
-    "startofwork.app",
-    "startofwork.gui",
-    "startofwork.browser",
-    "startofwork.config",
-    "startofwork.holidays",
-    "startofwork.attendance_state",
-    "startofwork.lock_state",
-    "startofwork.notifications",
-    "startofwork.rules",
-    "startofwork.single_instance",
+    "startofwork",
 ]
 
 hiddenimports = [
-    "startofwork.constants",
-    "startofwork.updater",
     "startofwork_updater",
     "startofwork_updater.app",
     "startofwork_updater.bootstrap",
+    "startofwork_updater.core",
     "startofwork_updater.install",
 ]
 
@@ -72,6 +62,10 @@ a = Analysis(
     noarchive=False,
     optimize=2,
 )
+
+# startofwork 패키지가 실수로 포함되면 제거
+a.pure = [x for x in a.pure if not str(x[0]).startswith("startofwork.")]
+a.datas = [d for d in a.datas if "startofwork" not in str(d[0]).replace("\\", "/")]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

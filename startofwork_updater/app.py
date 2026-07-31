@@ -13,7 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Optional
 
-from startofwork.updater import (
+from startofwork_updater.core import (
     ReleaseInfo,
     UpdateError,
     download_and_prepare_update,

@@ -159,7 +159,7 @@ class TestUpdaterNetwork(unittest.TestCase):
             def _progress(downloaded: int, total: int) -> None:
                 seen.append((downloaded, total))
 
-            with mock.patch("startofwork.updater.urlopen", return_value=_Resp()):
+            with mock.patch("startofwork_updater.core.urlopen", return_value=_Resp()):
                 path = download_release_asset(
                     release, dest_dir=dest, progress_callback=_progress
                 )
@@ -227,10 +227,10 @@ class TestUpdateConfig(unittest.TestCase):
             updater_exe.write_bytes(b"mz")
 
             release = ReleaseInfo(
-                version="1.2.12",
-                tag_name="v1.2.12",
+                    version="1.2.13",
+                tag_name="v1.2.13",
                 html_url="https://example.com/r",
-                asset_name="StartOfWorkSetup-1.2.12.exe",
+                asset_name="StartOfWorkSetup-1.2.13.exe",
                 download_url="https://example.com/setup.exe",
                 body="",
                 expected_sha256="A" * 64,
@@ -253,7 +253,7 @@ class TestUpdateConfig(unittest.TestCase):
             self.assertEqual(args[2], str(updater_exe))
             params = args[3]
             self.assertIn("--version", params)
-            self.assertIn("1.2.12", params)
+            self.assertIn("1.2.13", params)
             self.assertIn("--pid", params)
             self.assertIn("4242", params)
             self.assertIn("--sha256", params)
@@ -266,11 +266,11 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
         args = parse_args(
             [
                 "--version",
-                "1.2.12",
+                "1.2.13",
                 "--download-url",
                 "https://example.com/setup.exe",
                 "--asset-name",
-                "StartOfWorkSetup-1.2.12.exe",
+                "StartOfWorkSetup-1.2.13.exe",
                 "--html-url",
                 "https://example.com/r",
                 "--pid",
@@ -282,11 +282,11 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
                 "--bootstrapped",
             ]
         )
-        self.assertEqual(args.version, "1.2.12")
+        self.assertEqual(args.version, "1.2.13")
         self.assertEqual(args.pid, 99)
         self.assertTrue(args.bootstrapped)
         release = release_from_args(args)
-        self.assertEqual(release.version, "1.2.12")
+        self.assertEqual(release.version, "1.2.13")
         self.assertEqual(release.expected_sha256, "B" * 64)
 
     def test_temp_bootstrap_only_for_legacy_app_path(self) -> None:
