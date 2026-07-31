@@ -3,7 +3,7 @@
 ; 또는: .\build.ps1 -Installer
 
 #define MyAppName "StartOfWork"
-#define MyAppVersion "1.2.14"
+#define MyAppVersion "1.2.15"
 #define MyAppPublisher "StartOfWork"
 #define MyAppExeName "StartOfWork.exe"
 
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=StartOfWorkSetup-1.2.14
+OutputBaseFilename=StartOfWorkSetup-1.2.15
 SetupIconFile=StartOfWork.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -25,6 +25,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; 대화형 설치용. 자동 업데이트는 업데이터가 메인을 종료한 뒤 /NOCLOSEAPPLICATIONS 사용
 CloseApplications=yes
 ; Setup.exe 서명은 build.ps1이 빌드 후 signtool로 적용합니다.
 

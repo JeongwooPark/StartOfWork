@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.14
+# 출근 근태 자동 실행 (StartOfWork) v1.2.15
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.14
+**버전:** 1.2.15
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -15,7 +15,8 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 > **1.2.11부터** 다운로드·설치는 독립형 **StartOfWorkUpdater**가 담당합니다.  
 > **1.2.12부터** 업데이터를 `%LOCALAPPDATA%\StartOfWorkUpdater`에 분리 설치해 TEMP 복사·용량을 줄입니다.  
 > **1.2.13부터** 업데이터는 `startofwork`(GUI/pystray)를 import하지 않습니다.  
-> **1.2.14부터** 비밀번호는 Windows Credential Manager에 저장하고, 출퇴근은 DOM/서버 검증 후에만 기록합니다.
+> **1.2.14부터** 비밀번호는 Windows Credential Manager에 저장하고, 출퇴근은 DOM/서버 검증 후에만 기록합니다.  
+> **1.2.15부터** 자동 업데이트 Setup은 `/NOCLOSEAPPLICATIONS`로 실행해 이미 종료된 메인에 대한 대기·exit=5를 막습니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -50,7 +51,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.14.exe`
+결과물: `dist\StartOfWorkSetup-1.2.15.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -70,7 +71,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.14.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.15.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -250,6 +251,15 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.15
+
+- 자동 업데이트 설치 실패(`exit=5`) 수정
+  - 업데이터가 메인을 이미 종료한 뒤 Setup에 `/CLOSEAPPLICATIONS`를 넘겨, 없는/응답 없는 앱 종료를 기다리다 `/SUPPRESSMSGBOXES` Abort로 끝나던 문제
+  - Setup 인자를 `/NOCLOSEAPPLICATIONS`로 변경
+  - 남은 `chromedriver`·StartOfWork `chrome_profile` Chrome도 정리
+- **1.2.14**에서 업데이트 설치가 실패한 경우: 이 Setup을 **수동 설치**하세요
+- 산출물: `StartOfWorkSetup-1.2.15.exe`, `StartOfWork-1.2.15.zip`
 
 ### v1.2.14
 

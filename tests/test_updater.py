@@ -174,6 +174,15 @@ class TestUpdaterNetwork(unittest.TestCase):
 
 
 class TestUpdateConfig(unittest.TestCase):
+    def test_setup_installer_args_skip_close_applications(self) -> None:
+        from startofwork_updater.install import setup_installer_args
+
+        args = setup_installer_args(Path(r"C:\tmp\StartOfWorkSetup-1.2.15.exe"))
+        self.assertIn("/NOCLOSEAPPLICATIONS", args)
+        self.assertNotIn("/CLOSEAPPLICATIONS", args)
+        self.assertIn("/SILENT", args)
+        self.assertIn("/SUPPRESSMSGBOXES", args)
+
     def test_update_check_enabled_default(self) -> None:
         from startofwork import config
 
@@ -227,10 +236,10 @@ class TestUpdateConfig(unittest.TestCase):
             updater_exe.write_bytes(b"mz")
 
             release = ReleaseInfo(
-                    version="1.2.14",
-                tag_name="v1.2.14",
+                    version="1.2.15",
+                tag_name="v1.2.15",
                 html_url="https://example.com/r",
-                asset_name="StartOfWorkSetup-1.2.14.exe",
+                asset_name="StartOfWorkSetup-1.2.15.exe",
                 download_url="https://example.com/setup.exe",
                 body="",
                 expected_sha256="A" * 64,
@@ -253,7 +262,7 @@ class TestUpdateConfig(unittest.TestCase):
             self.assertEqual(args[2], str(updater_exe))
             params = args[3]
             self.assertIn("--version", params)
-            self.assertIn("1.2.14", params)
+            self.assertIn("1.2.15", params)
             self.assertIn("--pid", params)
             self.assertIn("4242", params)
             self.assertIn("--sha256", params)
@@ -266,11 +275,11 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
         args = parse_args(
             [
                 "--version",
-                "1.2.14",
+                "1.2.15",
                 "--download-url",
                 "https://example.com/setup.exe",
                 "--asset-name",
-                "StartOfWorkSetup-1.2.14.exe",
+                "StartOfWorkSetup-1.2.15.exe",
                 "--html-url",
                 "https://example.com/r",
                 "--pid",
@@ -282,11 +291,11 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
                 "--bootstrapped",
             ]
         )
-        self.assertEqual(args.version, "1.2.14")
+        self.assertEqual(args.version, "1.2.15")
         self.assertEqual(args.pid, 99)
         self.assertTrue(args.bootstrapped)
         release = release_from_args(args)
-        self.assertEqual(release.version, "1.2.14")
+        self.assertEqual(release.version, "1.2.15")
         self.assertEqual(release.expected_sha256, "B" * 64)
 
     def test_temp_bootstrap_only_for_legacy_app_path(self) -> None:
