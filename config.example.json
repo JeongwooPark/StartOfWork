@@ -1,7 +1,7 @@
 {
   "attendance_url": "",
   "username": "",
-  "password": "",
+  "credential_target": "",
   "active_start_time": "08:30",
   "active_end_time": "18:00",
   "auto_checkout_enabled": false,

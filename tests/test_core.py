@@ -36,13 +36,26 @@ class TestConfigCredentials(unittest.TestCase):
         from startofwork import config
         from startofwork.constants import DEFAULT_ATTENDANCE_URL
 
+        store: dict[str, str] = {}
+
+        def fake_set(target: str, password: str) -> None:
+            store[target] = password
+
+        def fake_get(target: str):
+            return store.get(target)
+
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "config.json"
-            with mock.patch.object(config, "CONFIG_FILE", cfg):
+            with mock.patch.object(config, "CONFIG_FILE", cfg), mock.patch(
+                "startofwork.config.set_password", side_effect=fake_set
+            ), mock.patch(
+                "startofwork.config.get_password", side_effect=fake_get
+            ):
                 config.clear_config_cache()
                 data = config.ensure_app_config()
                 self.assertEqual(data["username"], "")
                 self.assertEqual(data["attendance_url"], "")
+                self.assertNotIn("password", data)
                 self.assertFalse(config.has_login_credentials())
                 self.assertFalse(config.has_app_setup())
 
@@ -60,8 +73,48 @@ class TestConfigCredentials(unittest.TestCase):
                 loaded = json.loads(cfg.read_text(encoding="utf-8"))
                 self.assertEqual(loaded["username"], "alice")
                 self.assertEqual(loaded["attendance_url"], DEFAULT_ATTENDANCE_URL)
+                self.assertIn("credential_target", loaded)
+                self.assertNotIn("password", loaded)
                 self.assertIn("auto_checkout_time", loaded)
                 self.assertIn("active_start_time", loaded)
+
+    def test_migrate_plaintext_password_to_keyring(self) -> None:
+        from startofwork import config
+        from startofwork.constants import DEFAULT_ATTENDANCE_URL
+
+        store: dict[str, str] = {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(
+                json.dumps(
+                    {
+                        "attendance_url": DEFAULT_ATTENDANCE_URL,
+                        "username": "bob",
+                        "password": "legacy-secret",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(config, "CONFIG_FILE", cfg), mock.patch(
+                "startofwork.config.set_password",
+                side_effect=lambda t, p: store.__setitem__(t, p),
+            ), mock.patch(
+                "startofwork.config.get_password",
+                side_effect=lambda t: store.get(t),
+            ):
+                config.clear_config_cache()
+                data = config.ensure_app_config()
+                self.assertNotIn("password", data)
+                self.assertTrue(data.get("credential_target"))
+                self.assertEqual(
+                    store[data["credential_target"]], "legacy-secret"
+                )
+                user, pw = config.load_login_credentials()
+                self.assertEqual((user, pw), ("bob", "legacy-secret"))
+                on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+                self.assertNotIn("password", on_disk)
 
     def test_missing_attendance_url(self) -> None:
         from startofwork.config import is_missing_attendance_url
@@ -77,6 +130,8 @@ class TestConfigCredentials(unittest.TestCase):
     def test_migrate_legacy_config_fills_default_url(self) -> None:
         from startofwork import config
         from startofwork.constants import DEFAULT_ATTENDANCE_URL
+
+        store: dict[str, str] = {}
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "config.json"
@@ -95,7 +150,13 @@ class TestConfigCredentials(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with mock.patch.object(config, "CONFIG_FILE", cfg):
+            with mock.patch.object(config, "CONFIG_FILE", cfg), mock.patch(
+                "startofwork.config.set_password",
+                side_effect=lambda t, p: store.__setitem__(t, p),
+            ), mock.patch(
+                "startofwork.config.get_password",
+                side_effect=lambda t: store.get(t),
+            ):
                 config.clear_config_cache()
                 data = config.ensure_app_config()
                 self.assertEqual(data["attendance_url"], DEFAULT_ATTENDANCE_URL)
@@ -105,13 +166,21 @@ class TestConfigCredentials(unittest.TestCase):
         from startofwork import config
         from startofwork.constants import DEFAULT_ATTENDANCE_URL
 
+        store: dict[str, str] = {}
+
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "config.json"
             cfg.write_text(
                 json.dumps({"username": "bob", "password": "pw"}),
                 encoding="utf-8",
             )
-            with mock.patch.object(config, "CONFIG_FILE", cfg):
+            with mock.patch.object(config, "CONFIG_FILE", cfg), mock.patch(
+                "startofwork.config.set_password",
+                side_effect=lambda t, p: store.__setitem__(t, p),
+            ), mock.patch(
+                "startofwork.config.get_password",
+                side_effect=lambda t: store.get(t),
+            ):
                 config.clear_config_cache()
                 self.assertTrue(config.has_app_setup())
                 self.assertEqual(
@@ -318,8 +387,6 @@ class TestRules(unittest.TestCase):
         with mock.patch(
             "startofwork.rules.get_non_workday_reason", return_value=None
         ), mock.patch(
-            "startofwork.rules.load_last_check_in_date", return_value=day
-        ), mock.patch(
             "startofwork.rules.load_last_check_out_date", return_value=None
         ):
             self.assertFalse(
@@ -329,6 +396,7 @@ class TestRules(unittest.TestCase):
                     now=datetime(2026, 7, 15, 17, 0),
                 )
             )
+            # 로컬 출근 없어도 시각·근무일·미퇴근이면 True
             self.assertTrue(
                 rules.should_attempt_check_out(
                     day,
@@ -341,8 +409,8 @@ class TestRules(unittest.TestCase):
         from startofwork import rules
 
         with mock.patch(
-            "startofwork.rules.load_last_check_in_date"
-        ) as load_in, mock.patch(
+            "startofwork.rules.load_last_check_out_date"
+        ) as load_out, mock.patch(
             "startofwork.rules.get_non_workday_reason"
         ) as holiday:
             self.assertFalse(
@@ -352,7 +420,7 @@ class TestRules(unittest.TestCase):
                     now=datetime(2026, 7, 16, 8, 53),
                 )
             )
-            load_in.assert_not_called()
+            load_out.assert_not_called()
             holiday.assert_not_called()
 
 
@@ -853,6 +921,213 @@ class TestSingleInstance(unittest.TestCase):
         si.release_single_instance()
 
 
+class TestRetrySchedule(unittest.TestCase):
+    def test_network_retry_backoff(self) -> None:
+        from startofwork import attendance_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "check_in_state.json"
+            with mock.patch.object(
+                attendance_state, "CHECK_IN_STATE_FILE", state_file
+            ):
+                attendance_state.clear_check_in_state_cache()
+                t0 = datetime(2026, 7, 15, 9, 0, 0)
+                attendance_state.record_failure(
+                    "check_in", "network", "timeout", now=t0
+                )
+                state = attendance_state.load_check_in_state()
+                self.assertEqual(state["last_check_in_result"], "failed")
+                self.assertEqual(state["check_in_retry_count"], 1)
+                self.assertEqual(
+                    state["next_check_in_retry_at"],
+                    "2026-07-15T09:02:00",
+                )
+                self.assertFalse(
+                    attendance_state.is_attempt_allowed(
+                        "check_in", now=datetime(2026, 7, 15, 9, 1, 0)
+                    )
+                )
+                self.assertTrue(
+                    attendance_state.is_retry_due(
+                        "check_in", now=datetime(2026, 7, 15, 9, 2, 0)
+                    )
+                )
+
+                attendance_state.record_failure(
+                    "check_in",
+                    "network",
+                    "timeout2",
+                    now=datetime(2026, 7, 15, 9, 2, 0),
+                )
+                state = attendance_state.load_check_in_state()
+                self.assertEqual(state["check_in_retry_count"], 2)
+                self.assertEqual(
+                    state["next_check_in_retry_at"],
+                    "2026-07-15T09:07:00",
+                )
+
+    def test_auth_failure_blocks_retry(self) -> None:
+        from startofwork import attendance_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "check_in_state.json"
+            with mock.patch.object(
+                attendance_state, "CHECK_IN_STATE_FILE", state_file
+            ):
+                attendance_state.clear_check_in_state_cache()
+                now = datetime(2026, 7, 15, 10, 0, 0)
+                attendance_state.record_failure(
+                    "check_in", "auth", "login failed", now=now
+                )
+                self.assertTrue(
+                    attendance_state.is_auth_failure_blocking(
+                        "check_in", today=now.date()
+                    )
+                )
+                self.assertFalse(
+                    attendance_state.is_attempt_allowed("check_in", now=now)
+                )
+                self.assertIsNone(
+                    attendance_state.load_check_in_state().get(
+                        "next_check_in_retry_at"
+                    )
+                )
+
+    def test_success_resets_retry(self) -> None:
+        from startofwork import attendance_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "check_in_state.json"
+            with mock.patch.object(
+                attendance_state, "CHECK_IN_STATE_FILE", state_file
+            ):
+                attendance_state.clear_check_in_state_cache()
+                day = date(2026, 7, 15)
+                attendance_state.record_failure(
+                    "check_out",
+                    "verify_failed",
+                    "nope",
+                    now=datetime(2026, 7, 15, 18, 0, 0),
+                )
+                attendance_state.save_check_out_date(day)
+                state = attendance_state.load_check_in_state()
+                self.assertEqual(state["last_check_out_result"], "success")
+                self.assertEqual(state["check_out_retry_count"], 0)
+                self.assertNotIn("next_check_out_retry_at", state)
+
+
+class TestVerifyAndPeek(unittest.TestCase):
+    def test_click_check_in_saves_only_on_verify_success(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        with mock.patch(
+            "startofwork.browser.should_attempt_check_in", return_value=True
+        ), mock.patch(
+            "startofwork.browser._click_labeled_button", return_value=True
+        ), mock.patch(
+            "startofwork.browser._verify_after_click", return_value="success"
+        ), mock.patch(
+            "startofwork.browser.save_check_in_date"
+        ) as save, mock.patch(
+            "startofwork.browser.notify_check_in_done"
+        ):
+            self.assertTrue(browser.click_check_in_button(driver))
+            save.assert_called_once()
+
+        with mock.patch(
+            "startofwork.browser.should_attempt_check_in", return_value=True
+        ), mock.patch(
+            "startofwork.browser._click_labeled_button", return_value=True
+        ), mock.patch(
+            "startofwork.browser._verify_after_click", return_value="failed"
+        ), mock.patch(
+            "startofwork.browser.save_check_in_date"
+        ) as save, mock.patch(
+            "startofwork.browser.record_failure"
+        ) as fail, mock.patch(
+            "startofwork.browser.notify_attendance_failure"
+        ):
+            self.assertFalse(browser.click_check_in_button(driver))
+            save.assert_not_called()
+            fail.assert_called_once()
+
+    def test_peek_attendance_ui_state(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        check_in_btn = mock.Mock()
+        check_out_btn = mock.Mock()
+
+        with mock.patch(
+            "startofwork.browser.wait_for_attendance_url", return_value=True
+        ):
+            with mock.patch(
+                "startofwork.browser.find_button_by_xpaths",
+                side_effect=[check_in_btn, None],
+            ):
+                self.assertEqual(
+                    browser.peek_attendance_ui_state(driver), "not_checked_in"
+                )
+            with mock.patch(
+                "startofwork.browser.find_button_by_xpaths",
+                side_effect=[None, check_out_btn],
+            ):
+                self.assertEqual(
+                    browser.peek_attendance_ui_state(driver), "checked_in"
+                )
+
+    def test_checkout_worker_syncs_when_already_checked_out(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        captured = {}
+
+        def capture_job(worker):
+            captured["worker"] = worker
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=capture_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value=True
+        ), mock.patch(
+            "startofwork.browser.peek_attendance_ui_state",
+            return_value="checked_out",
+        ), mock.patch(
+            "startofwork.browser.save_check_out_date"
+        ) as save, mock.patch(
+            "startofwork.browser.click_check_out_button"
+        ) as click:
+            browser._auto_checkout_worker()
+            save.assert_called_once()
+            click.assert_not_called()
+
+    def test_checkout_worker_skips_when_not_checked_in(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+
+        def run_job(worker):
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=run_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value=True
+        ), mock.patch(
+            "startofwork.browser.peek_attendance_ui_state",
+            return_value="not_checked_in",
+        ), mock.patch(
+            "startofwork.browser.click_check_out_button"
+        ) as click, mock.patch(
+            "startofwork.browser.save_check_out_date"
+        ) as save:
+            browser._auto_checkout_worker()
+            click.assert_not_called()
+            save.assert_not_called()
+
+
 class TestImportsSmoke(unittest.TestCase):
     def test_import_package_modules(self) -> None:
         import startofwork
@@ -877,8 +1152,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.2.13")
-        self.assertEqual(startofwork.__version__, "1.2.13")
+        self.assertEqual(constants.APP_VERSION, "1.2.14")
+        self.assertEqual(startofwork.__version__, "1.2.14")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

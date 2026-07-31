@@ -56,3 +56,11 @@ def notify_check_out_done(day: Optional[date] = None) -> None:
         "퇴근 체크 완료",
         f"{APP_TITLE} — {target.isoformat()} 퇴근이 처리되었습니다.",
     )
+
+
+def notify_attendance_failure(
+    *,
+    title: str,
+    message: str,
+) -> None:
+    show_windows_toast(title, f"{APP_TITLE} — {message}")

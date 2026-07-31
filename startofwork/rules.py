@@ -89,10 +89,7 @@ def should_attempt_check_out(
         logging.debug("근무일 아님(%s) — 퇴근하기 생략", reason)
         return False
 
-    if load_last_check_in_date() != day:
-        logging.debug("오늘 출근 기록 없음 — 퇴근하기 생략")
-        return False
-
+    # 로컬 출근 기록은 필수 아님 — 서버 peek에서 최종 판정
     if load_last_check_out_date() == day:
         logging.debug("오늘(%s) 이미 퇴근 처리됨 — 퇴근하기 생략", day.isoformat())
         return False

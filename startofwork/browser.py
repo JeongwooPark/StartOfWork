@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -22,6 +22,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from startofwork.attendance_state import (
     load_last_check_out_date,
+    record_failure,
     save_check_in_date,
     save_check_out_date,
 )
@@ -36,9 +37,20 @@ from startofwork.constants import (
     CHECK_IN_RENDER_WAIT_SEC,
     CHECK_OUT_BUTTON_XPATH,
 )
-from startofwork.notifications import notify_check_in_done, notify_check_out_done
+from startofwork.notifications import (
+    notify_attendance_failure,
+    notify_check_in_done,
+    notify_check_out_done,
+)
 from startofwork.paths import CHROME_PROFILE_DIR
 from startofwork.rules import should_attempt_check_in, should_open_browser
+
+AttendanceUiState = Literal[
+    "not_checked_in", "checked_in", "checked_out", "unknown"
+]
+
+VERIFY_WAIT_SEC = 15
+VERIFY_REFRESH_WAIT_SEC = 8
 
 _active_drivers: list[webdriver.Chrome] = []
 _attendance_lock = threading.Lock()
@@ -241,6 +253,7 @@ def _click_labeled_button(
     xpaths: tuple[str, ...],
     label: str,
 ) -> bool:
+    """버튼 클릭만 수행. 저장/알림은 호출측에서 검증 후 처리."""
     if not wait_for_attendance_url(driver):
         return False
 
@@ -269,17 +282,130 @@ def _click_labeled_button(
         return False
 
 
+def peek_attendance_ui_state(driver: webdriver.Chrome) -> AttendanceUiState:
+    """활성 출근/퇴근 버튼 존재로 서버 UI 상태 판정 (클릭 없음)."""
+    if not wait_for_attendance_url(driver):
+        return "unknown"
+
+    check_in = find_button_by_xpaths(driver, CHECK_IN_BUTTON_XPATHS)
+    check_out = find_button_by_xpaths(driver, CHECK_OUT_BUTTON_XPATHS)
+
+    if check_in is not None and check_out is None:
+        return "not_checked_in"
+    if check_out is not None:
+        return "checked_in"
+    if check_in is None and check_out is None:
+        # 둘 다 비활성/없음 — 이미 퇴근했을 가능성
+        disabled_out = find_button_by_xpaths(
+            driver, CHECK_OUT_BUTTON_XPATHS, require_enabled=False
+        )
+        disabled_in = find_button_by_xpaths(
+            driver, CHECK_IN_BUTTON_XPATHS, require_enabled=False
+        )
+        if disabled_out is not None and disabled_in is None:
+            return "checked_out"
+        if disabled_in is not None and (
+            disabled_out is None or not disabled_out.is_enabled()
+        ):
+            # 출근 버튼만 보이는데 비활성 → 모호
+            if disabled_out is not None and not disabled_out.is_enabled():
+                return "checked_out"
+        return "unknown"
+    return "unknown"
+
+
+def _check_in_verified(driver: webdriver.Chrome) -> bool:
+    check_in = find_button_by_xpaths(driver, CHECK_IN_BUTTON_XPATHS)
+    check_out = find_button_by_xpaths(driver, CHECK_OUT_BUTTON_XPATHS)
+    return check_in is None or check_out is not None
+
+
+def _check_out_verified(driver: webdriver.Chrome) -> bool:
+    return find_button_by_xpaths(driver, CHECK_OUT_BUTTON_XPATHS) is None
+
+
+def _verify_after_click(
+    driver: webdriver.Chrome,
+    action: Literal["check_in", "check_out"],
+) -> Literal["success", "failed", "unknown"]:
+    """클릭 후 DOM 검증 → refresh → 재확인."""
+    predicate = (
+        _check_in_verified if action == "check_in" else _check_out_verified
+    )
+    label = "출근" if action == "check_in" else "퇴근"
+
+    try:
+        WebDriverWait(driver, VERIFY_WAIT_SEC).until(predicate)
+    except TimeoutException:
+        logging.warning("%s DOM 검증 타임아웃 (refresh 전)", label)
+        # refresh 후에도 실패면 unknown/failed 판정
+    except WebDriverException:
+        logging.exception("%s DOM 검증 중 WebDriver 오류", label)
+        return "unknown"
+
+    try:
+        driver.refresh()
+        time.sleep(1.0)
+        if not wait_for_attendance_url(driver):
+            return "unknown"
+        WebDriverWait(driver, VERIFY_REFRESH_WAIT_SEC).until(predicate)
+        logging.info("%s DOM 검증 성공 (refresh 후)", label)
+        return "success"
+    except TimeoutException:
+        logging.warning("%s DOM 검증 실패 (refresh 후)", label)
+        return "failed"
+    except WebDriverException:
+        logging.exception("%s refresh 검증 중 WebDriver 오류", label)
+        return "unknown"
+
+
 def click_check_in_button(driver: webdriver.Chrome) -> bool:
     today = date.today()
     if not should_attempt_check_in(today):
         return False
+
     if not _click_labeled_button(
         driver, xpaths=CHECK_IN_BUTTON_XPATHS, label="출근하기"
     ):
+        record_failure(
+            "check_in",
+            "button_not_found",
+            "출근하기 버튼을 찾지 못했거나 클릭에 실패했습니다",
+        )
+        notify_attendance_failure(
+            title="출근 체크 실패",
+            message="출근 버튼을 찾지 못했습니다. 잠시 후 재시도합니다.",
+        )
         return False
-    save_check_in_date(today)
-    notify_check_in_done(today)
-    return True
+
+    result = _verify_after_click(driver, "check_in")
+    if result == "success":
+        save_check_in_date(today)
+        notify_check_in_done(today)
+        return True
+
+    if result == "unknown":
+        record_failure(
+            "check_in",
+            "verify_unknown",
+            "출근 클릭 후 상태를 확인하지 못했습니다",
+            result="unknown",
+        )
+        notify_attendance_failure(
+            title="출근 상태 불명확",
+            message="클릭은 되었으나 서버 상태를 확인하지 못했습니다.",
+        )
+    else:
+        record_failure(
+            "check_in",
+            "verify_failed",
+            "출근 클릭 후 DOM 검증에 실패했습니다",
+        )
+        notify_attendance_failure(
+            title="출근 체크 실패",
+            message="출근이 반영되지 않은 것으로 보입니다. 재시도합니다.",
+        )
+    return False
 
 
 def click_check_out_button(driver: webdriver.Chrome) -> bool:
@@ -287,13 +413,49 @@ def click_check_out_button(driver: webdriver.Chrome) -> bool:
     if load_last_check_out_date() == today:
         logging.info("오늘 이미 퇴근 처리됨 — 클릭 생략")
         return False
+
     if not _click_labeled_button(
         driver, xpaths=CHECK_OUT_BUTTON_XPATHS, label="퇴근하기"
     ):
+        record_failure(
+            "check_out",
+            "button_not_found",
+            "퇴근하기 버튼을 찾지 못했거나 클릭에 실패했습니다",
+        )
+        notify_attendance_failure(
+            title="퇴근 체크 실패",
+            message="퇴근 버튼을 찾지 못했습니다. 잠시 후 재시도합니다.",
+        )
         return False
-    save_check_out_date(today)
-    notify_check_out_done(today)
-    return True
+
+    result = _verify_after_click(driver, "check_out")
+    if result == "success":
+        save_check_out_date(today)
+        notify_check_out_done(today)
+        return True
+
+    if result == "unknown":
+        record_failure(
+            "check_out",
+            "verify_unknown",
+            "퇴근 클릭 후 상태를 확인하지 못했습니다",
+            result="unknown",
+        )
+        notify_attendance_failure(
+            title="퇴근 상태 불명확",
+            message="클릭은 되었으나 서버 상태를 확인하지 못했습니다.",
+        )
+    else:
+        record_failure(
+            "check_out",
+            "verify_failed",
+            "퇴근 클릭 후 DOM 검증에 실패했습니다",
+        )
+        notify_attendance_failure(
+            title="퇴근 체크 실패",
+            message="퇴근이 반영되지 않은 것으로 보입니다. 재시도합니다.",
+        )
+    return False
 
 
 def login_if_needed(
@@ -429,8 +591,19 @@ def _run_with_driver(worker) -> None:
         worker(driver)
     except ValueError:
         logging.exception("근태 URL/설정 로드 실패")
-    except WebDriverException:
+    except WebDriverException as exc:
         logging.exception("근태 작업 중 WebDriver 오류")
+        action = getattr(worker, "_attendance_action", None)
+        if action in ("check_in", "check_out"):
+            record_failure(
+                action,
+                "network",
+                f"WebDriver: {exc}",
+            )
+            notify_attendance_failure(
+                title="근태 연결 실패",
+                message="브라우저/네트워크 오류로 작업을 마치지 못했습니다.",
+            )
     except Exception:
         logging.exception("근태 작업 실패")
     finally:
@@ -441,20 +614,67 @@ def _run_with_driver(worker) -> None:
 def _auto_login_worker(_chrome: Path | None = None) -> None:
     def _job(driver: webdriver.Chrome) -> None:
         if not login_if_needed(driver):
+            record_failure(
+                "check_in",
+                "auth",
+                "로그인에 실패했습니다",
+            )
+            notify_attendance_failure(
+                title="로그인 실패",
+                message="아이디/비밀번호를 확인하세요. 자동 재시도를 중단합니다.",
+            )
             return
         logging.info("근태 화면 전환 대기 후 출근하기 진행")
         click_check_in_button(driver)
 
+    _job._attendance_action = "check_in"  # type: ignore[attr-defined]
     _run_with_driver(_job)
 
 
 def _auto_checkout_worker(_chrome: Path | None = None) -> None:
     def _job(driver: webdriver.Chrome) -> None:
+        today = date.today()
         if not login_if_needed(driver):
+            record_failure(
+                "check_out",
+                "auth",
+                "로그인에 실패했습니다",
+            )
+            notify_attendance_failure(
+                title="로그인 실패",
+                message="아이디/비밀번호를 확인하세요. 자동 재시도를 중단합니다.",
+            )
             return
-        logging.info("근태 화면 전환 대기 후 퇴근하기 진행")
+
+        logging.info("근태 화면 전환 후 서버 상태 peek")
+        ui_state = peek_attendance_ui_state(driver)
+        logging.info("서버 근태 UI 상태: %s", ui_state)
+
+        if ui_state == "checked_out":
+            logging.info("서버에 이미 퇴근됨 — 로컬 상태 동기화")
+            save_check_out_date(today)
+            return
+        if ui_state == "not_checked_in":
+            logging.info("서버 미출근 — 자동 퇴근 생략")
+            return
+        if ui_state == "unknown":
+            record_failure(
+                "check_out",
+                "verify_unknown",
+                "서버 근태 버튼 상태를 판별하지 못했습니다",
+                result="unknown",
+            )
+            notify_attendance_failure(
+                title="퇴근 상태 불명확",
+                message="서버 근태 상태를 확인하지 못했습니다.",
+            )
+            return
+
+        # checked_in
+        logging.info("서버 출근 확인 — 퇴근하기 진행")
         click_check_out_button(driver)
 
+    _job._attendance_action = "check_out"  # type: ignore[attr-defined]
     _run_with_driver(_job)
 
 

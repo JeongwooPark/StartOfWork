@@ -20,6 +20,9 @@ from startofwork.attendance_state import (
     get_check_out_status_text,
     get_monitor_attendance_snapshot,
     get_tray_status_text,
+    is_attempt_allowed,
+    is_auth_failure_blocking,
+    is_retry_due,
 )
 from startofwork.browser import (
     is_checkout_job_running,
@@ -99,17 +102,21 @@ def next_poll_interval_ms(
     last_check_out: Optional[date],
     active_start: dt_time,
     update_check_enabled: bool = False,
+    checkout_retry_due: bool = False,
 ) -> int:
     """폴링 주기(ms). 출근/퇴근 임박은 짧게, 한산 구간은 길게."""
     today = now.date()
     checked_in = last_check_in == today
     checked_out = last_check_out == today
     pending_check_in = non_workday_reason is None and not checked_in
+    # 로컬 출근 없어도 자동 퇴근 후보(서버 peek) — 미퇴근이면 pending
     pending_check_out = (
         checkout_enabled
-        and checked_in
         and not checked_out
-        and checkout_triggered_date != today
+        and (
+            checkout_triggered_date != today
+            or checkout_retry_due
+        )
     )
 
     if pending_check_in and (
@@ -973,16 +980,24 @@ class LockStateMonitor(tk.Tk):
     def _maybe_run_auto_checkout(self, now: datetime) -> None:
         if not bool(self.auto_checkout_enabled.get()):
             return
-        if self._checkout_triggered_date == now.date():
-            return
         if is_checkout_job_running():
             return
+        if is_auth_failure_blocking("check_out", today=now.date()):
+            return
+
+        retry_due = is_retry_due("check_out", now=now)
+        if self._checkout_triggered_date == now.date() and not retry_due:
+            return
+
         checkout_time = self._get_selected_checkout_time()
         if not should_attempt_check_out(
             now.date(),
             checkout_time=checkout_time,
             now=now,
         ):
+            return
+
+        if not is_attempt_allowed("check_out", now=now):
             return
 
         self._checkout_triggered_date = now.date()
@@ -1444,6 +1459,14 @@ class LockStateMonitor(tk.Tk):
             self.after(0, self._prompt_login_setup)
             return "최초 설정 필요 — 근태 URL과 아이디/비밀번호를 입력하세요"
 
+        if is_auth_failure_blocking("check_in", today=now.date()):
+            logging.info("%s 출근 생략 — 인증 실패로 재시도 중단", trigger)
+            return "로그인 실패 — 설정에서 계정을 확인하세요"
+
+        if not is_attempt_allowed("check_in", now=now):
+            logging.info("%s 출근 생략 — 재시도 대기 중", trigger)
+            return "출근 재시도 대기 중"
+
         allowed, reason = should_open_browser(now)
         if not allowed:
             logging.info(
@@ -1530,6 +1553,25 @@ class LockStateMonitor(tk.Tk):
 
         return self._trigger_check_in_if_allowed(now, trigger="업무시간 시작")
 
+    def _maybe_retry_failed_check_in(
+        self,
+        now: datetime,
+        *,
+        within: bool,
+        lock_state: Optional[bool],
+        last_check_in: Optional[date],
+    ) -> Optional[str]:
+        """실패·unknown 후 재시도 시각이 되면 출근을 다시 시도."""
+        if last_check_in == now.date():
+            return None
+        if not within:
+            return None
+        if lock_state is True:
+            return None
+        if not is_retry_due("check_in", now=now):
+            return None
+        return self._trigger_check_in_if_allowed(now, trigger="출근 재시도")
+
     def _next_monitor_interval_ms(
         self,
         now: datetime,
@@ -1555,6 +1597,7 @@ class LockStateMonitor(tk.Tk):
             last_check_out=last_check_out,
             active_start=active_start,
             update_check_enabled=load_update_check_enabled(),
+            checkout_retry_due=is_retry_due("check_out", now=now),
         )
 
     def _apply_last_changed_label(self) -> None:
@@ -1621,6 +1664,14 @@ class LockStateMonitor(tk.Tk):
         )
 
         action_message: Optional[str] = active_start_message
+        if action_message is None:
+            action_message = self._maybe_retry_failed_check_in(
+                now,
+                within=within,
+                lock_state=state,
+                last_check_in=last_check_in,
+            )
+
         state_changed = state != self.current_state
 
         if state_changed:

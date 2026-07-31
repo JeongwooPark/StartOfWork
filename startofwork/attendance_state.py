@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Literal, Optional
 
 from startofwork.holidays import get_non_workday_reason
 from startofwork.json_io import atomic_write_json
 from startofwork.paths import CHECK_IN_STATE_FILE
+
+ActionKind = Literal["check_in", "check_out"]
+ResultKind = Literal["success", "failed", "unknown"]
+ErrorKind = Literal[
+    "network",
+    "button_not_found",
+    "auth",
+    "verify_failed",
+    "verify_unknown",
+    "other",
+]
+
+# 네트워크/타임아웃: 2 → 5 → 10분, 최대 3회
+_NETWORK_RETRY_MINUTES = (2, 5, 10)
+_BUTTON_NOT_FOUND_RETRY_MINUTES = 10
+_BUTTON_NOT_FOUND_MAX_EXTRA = 1
+_UNKNOWN_MAX_RETRY = 1
 
 _state_cache: Optional[dict] = None
 _state_mtime_ns: Optional[int] = None
@@ -86,6 +103,15 @@ def _parse_state_date(value) -> Optional[date]:
         return None
 
 
+def _parse_state_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
 def load_last_check_in_date() -> Optional[date]:
     return _parse_state_date(peek_check_in_state().get("last_check_in_date"))
 
@@ -117,38 +143,192 @@ def format_check_in_time(raw: Optional[str]) -> Optional[str]:
         return text.replace("T", " ")
 
 
-def save_check_in_date(day: date) -> bool:
+def _prefix(action: ActionKind) -> str:
+    return "check_in" if action == "check_in" else "check_out"
+
+
+def _retry_delay_minutes(
+    error_kind: ErrorKind, retry_count: int
+) -> Optional[int]:
+    """다음 재시도까지 대기 분. None이면 재시도 중단."""
+    if error_kind == "auth":
+        return None
+    if error_kind == "verify_unknown":
+        if retry_count >= _UNKNOWN_MAX_RETRY:
+            return None
+        return _NETWORK_RETRY_MINUTES[0]
+    if error_kind == "button_not_found":
+        if retry_count >= _BUTTON_NOT_FOUND_MAX_EXTRA:
+            return None
+        return _BUTTON_NOT_FOUND_RETRY_MINUTES
+    if error_kind in ("network", "verify_failed", "other"):
+        if retry_count >= len(_NETWORK_RETRY_MINUTES):
+            return None
+        return _NETWORK_RETRY_MINUTES[retry_count]
+    return None
+
+
+def record_attempt(
+    action: ActionKind,
+    *,
+    now: Optional[datetime] = None,
+) -> None:
+    current = now or datetime.now()
+    prefix = _prefix(action)
     payload = load_check_in_state()
-    payload["last_check_in_date"] = day.isoformat()
-    payload["last_check_in_at"] = datetime.now().isoformat(timespec="seconds")
+    payload[f"last_{prefix}_attempt"] = current.isoformat(timespec="seconds")
+    try:
+        _write_check_in_state(payload)
+    except Exception:
+        logging.exception("%s 시도 시각 저장 실패", action)
+
+
+def record_success(
+    action: ActionKind,
+    day: date,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    current = now or datetime.now()
+    prefix = _prefix(action)
+    payload = load_check_in_state()
+    payload[f"last_{prefix}_date"] = day.isoformat()
+    payload[f"last_{prefix}_at"] = current.isoformat(timespec="seconds")
+    payload[f"last_{prefix}_result"] = "success"
+    payload[f"last_{prefix}_attempt"] = current.isoformat(timespec="seconds")
+    payload[f"last_{prefix}_error"] = ""
+    payload[f"{prefix}_retry_count"] = 0
+    payload.pop(f"next_{prefix}_retry_at", None)
     try:
         _write_check_in_state(payload)
         logging.info(
-            "출근 처리 기록 저장: date=%s file=%s",
+            "%s 성공 기록: date=%s file=%s",
+            action,
             day.isoformat(),
             CHECK_IN_STATE_FILE.name,
         )
         return True
     except Exception:
-        logging.exception("출근 상태 파일 저장 실패")
+        logging.exception("%s 성공 상태 저장 실패", action)
         return False
+
+
+def record_failure(
+    action: ActionKind,
+    error_kind: ErrorKind,
+    message: str,
+    *,
+    result: ResultKind = "failed",
+    now: Optional[datetime] = None,
+) -> None:
+    current = now or datetime.now()
+    prefix = _prefix(action)
+    payload = load_check_in_state()
+    prev_attempt = _parse_state_datetime(payload.get(f"last_{prefix}_attempt"))
+    # 시도일이 오늘이 아니면 카운트 리셋
+    if prev_attempt is None or prev_attempt.date() != current.date():
+        retry_count = 0
+    else:
+        retry_count = int(payload.get(f"{prefix}_retry_count") or 0)
+
+    payload[f"last_{prefix}_result"] = result
+    payload[f"last_{prefix}_attempt"] = current.isoformat(timespec="seconds")
+    payload[f"last_{prefix}_error"] = f"{error_kind}: {message}"[:500]
+
+    delay = _retry_delay_minutes(error_kind, retry_count)
+    if delay is None:
+        payload[f"{prefix}_retry_count"] = retry_count
+        payload.pop(f"next_{prefix}_retry_at", None)
+        logging.warning(
+            "%s 실패 — 재시도 중단 (%s): %s", action, error_kind, message
+        )
+    else:
+        next_count = retry_count + 1
+        payload[f"{prefix}_retry_count"] = next_count
+        next_at = current + timedelta(minutes=delay)
+        payload[f"next_{prefix}_retry_at"] = next_at.isoformat(
+            timespec="seconds"
+        )
+        logging.warning(
+            "%s 실패 (%s) — %s분 후 재시도 (%s회): %s",
+            action,
+            error_kind,
+            delay,
+            next_count,
+            message,
+        )
+
+    try:
+        _write_check_in_state(payload)
+    except Exception:
+        logging.exception("%s 실패 상태 저장 실패", action)
+
+
+def save_check_in_date(day: date) -> bool:
+    return record_success("check_in", day)
 
 
 def save_check_out_date(day: date) -> bool:
-    payload = load_check_in_state()
-    payload["last_check_out_date"] = day.isoformat()
-    payload["last_check_out_at"] = datetime.now().isoformat(timespec="seconds")
-    try:
-        _write_check_in_state(payload)
-        logging.info(
-            "퇴근 처리 기록 저장: date=%s file=%s",
-            day.isoformat(),
-            CHECK_IN_STATE_FILE.name,
-        )
-        return True
-    except Exception:
-        logging.exception("퇴근 상태 파일 저장 실패")
+    return record_success("check_out", day)
+
+
+def is_auth_failure_blocking(
+    action: ActionKind, *, today: Optional[date] = None
+) -> bool:
+    day = today or date.today()
+    state = peek_check_in_state()
+    prefix = _prefix(action)
+    if state.get(f"last_{prefix}_result") not in ("failed", "unknown"):
         return False
+    attempt = _parse_state_datetime(state.get(f"last_{prefix}_attempt"))
+    if attempt is None or attempt.date() != day:
+        return False
+    error = str(state.get(f"last_{prefix}_error") or "")
+    return error.startswith("auth:")
+
+
+def is_retry_due(
+    action: ActionKind, *, now: Optional[datetime] = None
+) -> bool:
+    """실패 후 재시도 시각이 지났으면 True. 성공·미시도는 False."""
+    current = now or datetime.now()
+    state = peek_check_in_state()
+    prefix = _prefix(action)
+    result = state.get(f"last_{prefix}_result")
+    if result not in ("failed", "unknown"):
+        return False
+    attempt = _parse_state_datetime(state.get(f"last_{prefix}_attempt"))
+    if attempt is None or attempt.date() != current.date():
+        return False
+    if is_auth_failure_blocking(action, today=current.date()):
+        return False
+    next_at = _parse_state_datetime(state.get(f"next_{prefix}_retry_at"))
+    if next_at is None:
+        return False
+    return current >= next_at
+
+
+def is_attempt_allowed(
+    action: ActionKind, *, now: Optional[datetime] = None
+) -> bool:
+    """당일 첫 시도이거나 재시도 시각이 지났으면 True."""
+    current = now or datetime.now()
+    state = peek_check_in_state()
+    prefix = _prefix(action)
+    result = state.get(f"last_{prefix}_result")
+    attempt = _parse_state_datetime(state.get(f"last_{prefix}_attempt"))
+
+    if result not in ("failed", "unknown"):
+        return True
+    if attempt is None or attempt.date() != current.date():
+        return True
+    if is_auth_failure_blocking(action, today=current.date()):
+        return False
+    next_at = _parse_state_datetime(state.get(f"next_{prefix}_retry_at"))
+    if next_at is None:
+        # 재시도 스케줄 없음 = 상한 도달 또는 auth
+        return False
+    return current >= next_at
 
 
 def _non_workday_status_text(reason: str) -> str:

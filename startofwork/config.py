@@ -13,13 +13,18 @@ from startofwork.constants import (
     DEFAULT_ATTENDANCE_URL,
     DEFAULT_AUTO_CHECKOUT_TIME,
 )
+from startofwork.credentials import (
+    credential_target_for_url,
+    get_password,
+    set_password,
+)
 from startofwork.json_io import atomic_write_json, backup_corrupt_file
 from startofwork.paths import CONFIG_FILE
 
 _DEFAULT_CONFIG = {
     "attendance_url": "",
     "username": "",
-    "password": "",
+    "credential_target": "",
     "active_start_time": "08:30",
     "active_end_time": "18:00",
     "auto_checkout_enabled": False,
@@ -92,6 +97,7 @@ def _config_cache_fresh(mtime: Optional[int]) -> bool:
         and mtime == _config_mtime_ns
     )
 
+
 def load_app_config() -> dict:
     global _config_cache, _config_mtime_ns
 
@@ -120,10 +126,60 @@ def load_app_config() -> dict:
 
 def save_app_config(data: dict) -> None:
     global _config_cache, _config_mtime_ns
-    atomic_write_json(CONFIG_FILE, data)
-    _config_cache = dict(data)
+    # 평문 비밀번호는 config에 남기지 않는다
+    payload = dict(data)
+    payload.pop("password", None)
+    atomic_write_json(CONFIG_FILE, payload)
+    _config_cache = dict(payload)
     _config_mtime_ns = _file_mtime_ns()
     _invalidate_derived_caches()
+
+
+def _resolve_credential_target(data: dict) -> str:
+    existing = normalize_credential(data.get("credential_target", ""))
+    if existing:
+        return existing
+    url = normalize_attendance_url(data.get("attendance_url", ""))
+    if is_missing_attendance_url(url):
+        return ""
+    return credential_target_for_url(url)
+
+
+def _migrate_plaintext_password(data: dict) -> bool:
+    """config.json 평문 password → keyring 이전. 성공 시 True(파일 변경 필요)."""
+    plaintext = str(data.get("password", "")).strip()
+    if not plaintext:
+        if "password" in data:
+            del data["password"]
+            return True
+        return False
+
+    username = normalize_credential(data.get("username", ""))
+    target = _resolve_credential_target(data)
+    if not target:
+        # URL이 아직 없으면 username 기반으로 임시 target
+        if username:
+            target = f"StartOfWork:{username}"
+        else:
+            logging.warning(
+                "평문 password 마이그레이션 보류 — username/URL 없음"
+            )
+            return False
+
+    try:
+        set_password(target, plaintext)
+    except Exception:
+        logging.exception(
+            "평문 password → Credential Manager 이전 실패 — 설정 GUI 필요"
+        )
+        return False
+
+    data["credential_target"] = target
+    data.pop("password", None)
+    logging.info(
+        "평문 password를 Credential Manager로 이전: target=%s", target
+    )
+    return True
 
 
 def ensure_app_config() -> dict:
@@ -148,7 +204,7 @@ def ensure_app_config() -> dict:
 
     changed = False
     for key, value in _DEFAULT_CONFIG.items():
-        if key in ("username", "password", "attendance_url"):
+        if key in ("username", "credential_target", "attendance_url"):
             continue
         if key not in data:
             data[key] = value
@@ -157,11 +213,25 @@ def ensure_app_config() -> dict:
     # 1.1.3 이하: attendance_url 키 없음 + 계정 있음 → 기본 URL로 마이그레이션
     if "attendance_url" not in data:
         username = normalize_credential(data.get("username", ""))
-        password = str(data.get("password", "")).strip()
-        if not is_missing_credentials(username, password):
+        plaintext = str(data.get("password", "")).strip()
+        target = normalize_credential(data.get("credential_target", ""))
+        stored_pw = get_password(target) if target else None
+        has_creds = not is_missing_credentials(
+            username, plaintext or (stored_pw or "")
+        )
+        if has_creds:
             data["attendance_url"] = DEFAULT_ATTENDANCE_URL
         else:
             data["attendance_url"] = ""
+        changed = True
+
+    if not normalize_credential(data.get("credential_target", "")):
+        url = normalize_attendance_url(data.get("attendance_url", ""))
+        if not is_missing_attendance_url(url):
+            data["credential_target"] = credential_target_for_url(url)
+            changed = True
+
+    if _migrate_plaintext_password(data):
         changed = True
 
     if changed:
@@ -191,13 +261,21 @@ def has_attendance_url() -> bool:
         return False
 
 
+def _password_from_config_data(data: dict) -> str:
+    target = _resolve_credential_target(data)
+    if not target:
+        return ""
+    return get_password(target) or ""
+
+
 def load_login_credentials() -> tuple[str, str]:
-    data = load_app_config()
+    data = ensure_app_config()
     username = normalize_credential(data.get("username", ""))
-    password = str(data.get("password", "")).strip()
+    password = _password_from_config_data(data)
     if is_missing_credentials(username, password):
         raise ValueError(
-            f"설정 파일에 username/password가 필요합니다: {CONFIG_FILE}"
+            f"설정 파일에 username과 Credential Manager 비밀번호가 필요합니다: "
+            f"{CONFIG_FILE}"
         )
     return username, password
 
@@ -225,10 +303,32 @@ def has_app_setup() -> bool:
 
     url = normalize_attendance_url(data.get("attendance_url", ""))
     username = normalize_credential(data.get("username", ""))
-    password = str(data.get("password", "")).strip()
+    password = _password_from_config_data(data)
     return not is_missing_attendance_url(url) and not is_missing_credentials(
         username, password
     )
+
+
+def _store_credentials(
+    data: dict,
+    *,
+    username: str,
+    password: str,
+    attendance_url: Optional[str] = None,
+) -> dict:
+    if attendance_url is not None:
+        data["attendance_url"] = attendance_url
+    url = normalize_attendance_url(data.get("attendance_url", ""))
+    if is_missing_attendance_url(url):
+        target = f"StartOfWork:{username}"
+    else:
+        target = credential_target_for_url(url)
+    set_password(target, password)
+    data["username"] = username
+    data["credential_target"] = target
+    data.pop("password", None)
+    return data
+
 
 def save_login_credentials(username: str, password: str) -> None:
     username = normalize_credential(username)
@@ -237,10 +337,9 @@ def save_login_credentials(username: str, password: str) -> None:
         raise ValueError("아이디와 비밀번호를 입력하세요")
 
     data = ensure_app_config()
-    data["username"] = username
-    data["password"] = password
+    data = _store_credentials(data, username=username, password=password)
     for key, value in _DEFAULT_CONFIG.items():
-        if key in ("username", "password"):
+        if key in ("username", "credential_target"):
             continue
         data.setdefault(key, value)
     save_app_config(data)
@@ -258,11 +357,14 @@ def save_app_setup(attendance_url: str, username: str, password: str) -> None:
         raise ValueError("아이디와 비밀번호를 입력하세요")
 
     data = ensure_app_config()
-    data["attendance_url"] = attendance_url
-    data["username"] = username
-    data["password"] = password
+    data = _store_credentials(
+        data,
+        username=username,
+        password=password,
+        attendance_url=attendance_url,
+    )
     for key, value in _DEFAULT_CONFIG.items():
-        if key in ("username", "password", "attendance_url"):
+        if key in ("username", "credential_target", "attendance_url"):
             continue
         data.setdefault(key, value)
     save_app_config(data)

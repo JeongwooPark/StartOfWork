@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.13
+# 출근 근태 자동 실행 (StartOfWork) v1.2.14
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.13
+**버전:** 1.2.14
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -14,7 +14,8 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 > **1.2.10부터** 트레이 툴팁이 퇴근·자정·공휴일 상태를 반영합니다.  
 > **1.2.11부터** 다운로드·설치는 독립형 **StartOfWorkUpdater**가 담당합니다.  
 > **1.2.12부터** 업데이터를 `%LOCALAPPDATA%\StartOfWorkUpdater`에 분리 설치해 TEMP 복사·용량을 줄입니다.  
-> **1.2.13부터** 업데이터는 `startofwork`(GUI/pystray)를 import하지 않습니다.
+> **1.2.13부터** 업데이터는 `startofwork`(GUI/pystray)를 import하지 않습니다.  
+> **1.2.14부터** 비밀번호는 Windows Credential Manager에 저장하고, 출퇴근은 DOM/서버 검증 후에만 기록합니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -23,7 +24,8 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
   - **업무시간 시작 시각 진입** 시 (날짜당 1회, 예: 08:20 로그인 → 08:30에 출근)
   - 조건: 설정한 업무시간 · 평일 · 오늘 아직 미출근
 - **하루 1회 출근/퇴근**: `check_in_state.json`에 기록해 중복 방지
-- **자동 퇴근**: GUI에서 활성화하면 지정 시각 이후 headless Chrome으로 **퇴근하기** 클릭 (잠금 화면에서도 동작)
+- **자동 퇴근**: GUI에서 활성화하면 지정 시각 이후 headless Chrome으로 서버 상태를 확인한 뒤 **퇴근하기** 클릭 (잠금 화면에서도 동작)
+- **자격증명**: 비밀번호는 `config.json`이 아니라 **Windows Credential Manager**에 저장
 - **업무시간 설정**: `config.json` / GUI에서 시작·종료 시각 변경 가능 (기본 `08:30`~`18:00`)
 - **공휴일 판별**: [한국천문연구원 특일정보 Open API](https://www.data.go.kr/data/15012690/openapi.do) (매일 확인, 내용 변경 시에만 캐시 갱신)
 - **주말/공휴일 제외**: 토·일·공휴일에는 출근·퇴근 자동화 생략
@@ -48,7 +50,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.13.exe`
+결과물: `dist\StartOfWorkSetup-1.2.14.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -68,7 +70,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.13.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.14.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -109,7 +111,7 @@ uv run python main.py
 {
   "attendance_url": "",
   "username": "",
-  "password": "",
+  "credential_target": "",
   "active_start_time": "08:30",
   "active_end_time": "18:00",
   "auto_checkout_enabled": false,
@@ -122,13 +124,15 @@ uv run python main.py
 |------|------|
 | `attendance_url` | 다우오피스 근태 페이지 전체 URL (`https://…/my-attendance-status`) |
 | `username` | 다우오피스 로그인 아이디 |
-| `password` | 다우오피스 로그인 비밀번호 |
+| `credential_target` | Windows Credential Manager 항목 키 (`StartOfWork:{호스트}`) |
 | `active_start_time` | 출근 자동화 시작 시각 (`HH:MM`, 기본 `08:30`) |
 | `active_end_time` | 출근 자동화 종료 시각 (`HH:MM`, 기본 `18:00`) |
 | `auto_checkout_enabled` | 자동 퇴근 사용 여부 (`true` / `false`) |
 | `auto_checkout_time` | 자동 퇴근 시각 (`HH:MM`, 기본 `18:00`) |
 | `update_check_enabled` | GitHub Releases 업데이트 확인 (`true` / `false`, 기본 `true`) |
 
+- 비밀번호는 `config.json`에 저장하지 않고 **Windows Credential Manager**에 보관합니다.
+- 구버전에 평문 `password`가 있으면 첫 실행 시 Credential Manager로 이전 후 파일에서 삭제합니다.
 - GUI의 **업무시간**, **자동 퇴근 활성화**, **퇴근 시각**은 변경 즉시 저장됩니다.
 - 구버전(1.1.3 이하) config에 `attendance_url`이 없고 계정만 있으면, 기존 기본 URL로 자동 보강됩니다.
 - 구버전 config에 업무시간 키가 없으면 `08:30`/`18:00`으로 자동 보강됩니다.
@@ -138,7 +142,7 @@ uv run python main.py
 
 1. **근태 URL** 입력 후 다음
 2. **아이디/비밀번호** 입력
-3. **확인 및 저장** → 해당 URL로 로그인·근태 버튼 검증 후 `config.json`에 저장
+3. **확인 및 저장** → 해당 URL로 로그인·근태 버튼 검증 후 계정·URL 저장 (비밀번호는 Credential Manager)
 
 ### 자동 업데이트 (1.2.0+)
 
@@ -179,7 +183,7 @@ uv run python main.py
 1. 설정한 **업무시간** 안
 2. **평일** (토·일·공휴일 아님)
 3. 오늘 **아직 출근 처리되지 않음**
-4. `username` / `password` 설정됨
+4. `username` + Credential Manager 비밀번호 설정됨
 
 충족 시 headless Chrome으로 로그인 후 **출근하기**를 클릭하고 브라우저를 종료합니다.
 
@@ -196,7 +200,7 @@ uv run python main.py
 
 | 파일 | 설명 |
 |------|------|
-| `config.json` | 계정·업무시간·자동 퇴근 설정 |
+| `config.json` | 계정(아이디)·업무시간·자동 퇴근 설정 (비밀번호 제외) |
 | `config.example.json` | 설정 예시 |
 | `check_in_state.json` | 출근/퇴근 처리 기록 |
 | `holiday_cache.json` | 당월 공휴일 캐시 |
@@ -213,6 +217,7 @@ startofwork/
   gui.py                    # GUI · 트레이 · 부팅 출근
   browser.py                # Selenium 로그인·출근·퇴근
   config.py                 # config.json (계정·업무시간·퇴근)
+  credentials.py            # Windows Credential Manager
   holidays.py               # 공휴일 API/캐시
   attendance_state.py       # 출근/퇴근 상태 파일
   rules.py                  # 출근/퇴근 실행 조건
@@ -245,6 +250,14 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.14
+
+- 비밀번호를 Windows Credential Manager(`keyring`)로 이전 — `config.json` 평문 제거
+- 출퇴근 클릭 후 DOM 검증·새로고침 재확인이 끝난 뒤에만 성공 기록
+- 실패/`unknown`·재시도 스케줄 기록 (네트워크 2→5→10분, 버튼 미발견, 인증 실패 시 중단)
+- 자동 퇴근은 로컬 출근 기록만이 아니라 서버 버튼 상태 peek로 판정
+- 산출물: `StartOfWorkSetup-1.2.14.exe`, `StartOfWork-1.2.14.zip`
 
 ### v1.2.13
 
