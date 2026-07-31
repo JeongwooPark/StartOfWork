@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import threading
 import tkinter as tk
 from datetime import date, datetime, time as dt_time
@@ -66,8 +67,7 @@ from startofwork.updater import (
     ReleaseInfo,
     UpdateError,
     check_for_update,
-    download_and_prepare_update,
-    launch_update_installer,
+    launch_standalone_updater,
 )
 
 
@@ -1176,7 +1176,7 @@ class LockStateMonitor(tk.Tk):
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         status_var = tk.StringVar(
-            value=f"{message} — 먼저 다운로드한 뒤 설치하세요."
+            value=f"{message} — 「업데이트 실행」을 누르면 업데이터가 다운로드·설치를 진행합니다."
         )
         ttk.Label(
             frame,
@@ -1184,200 +1184,48 @@ class LockStateMonitor(tk.Tk):
             style="Caption.TLabel",
             wraplength=380,
             justify="left",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        progress = ttk.Progressbar(
-            frame, mode="determinate", maximum=100, length=360
-        )
-        progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 4))
-        progress_label_var = tk.StringVar(value="대기 중")
-        ttk.Label(
-            frame,
-            textvariable=progress_label_var,
-            style="Caption.TLabel",
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
         button_row = ttk.Frame(frame)
-        button_row.grid(row=6, column=0, columnspan=2, sticky="e")
-
-        download_button = ttk.Button(button_row, text="다운로드")
-        install_button = ttk.Button(button_row, text="설치 및 재시작")
-        install_button.configure(state="disabled")
-
-        downloaded_setup: dict[str, Optional[Path]] = {"path": None}
-        phase = {"name": "idle"}  # idle | downloading | ready | installing
-
-        def _format_bytes(n: int) -> str:
-            if n < 1024:
-                return f"{n} B"
-            if n < 1024 * 1024:
-                return f"{n / 1024:.1f} KB"
-            return f"{n / (1024 * 1024):.1f} MB"
+        button_row.grid(row=4, column=0, columnspan=2, sticky="e")
 
         def _close_dialog() -> None:
-            if phase["name"] in ("downloading", "installing"):
-                status_var.set("업데이트 진행 중입니다. 잠시만 기다려 주세요.")
+            if self._update_busy:
+                status_var.set("업데이터를 시작하는 중입니다. 잠시만 기다려 주세요.")
                 return
             dialog.grab_release()
             dialog.destroy()
             self._update_dialog = None
             self._update_busy = False
 
-        def _on_progress(downloaded: int, total: int) -> None:
-            def _ui() -> None:
-                if not dialog.winfo_exists():
-                    return
-                if total > 0:
-                    try:
-                        progress.stop()
-                    except tk.TclError:
-                        pass
-                    pct = min(100, int(downloaded * 100 / total))
-                    progress.configure(mode="determinate", maximum=100, value=pct)
-                    progress_label_var.set(
-                        f"다운로드 중… {pct}% "
-                        f"({_format_bytes(downloaded)} / {_format_bytes(total)})"
-                    )
-                else:
-                    if str(progress.cget("mode")) != "indeterminate":
-                        progress.configure(mode="indeterminate")
-                        progress.start(12)
-                    progress_label_var.set(
-                        f"다운로드 중… {_format_bytes(downloaded)}"
-                    )
-
-            self.after(0, _ui)
-
-        def _on_download() -> None:
-            if self._update_busy or phase["name"] != "idle":
+        def _on_run_updater() -> None:
+            if self._update_busy:
                 return
             self._update_busy = True
-            phase["name"] = "downloading"
-            download_button.configure(state="disabled")
-            install_button.configure(state="disabled")
-            progress.configure(mode="determinate", value=0)
-            status_var.set("설치 파일을 다운로드하는 중입니다.")
-            progress_label_var.set("다운로드 시작…")
-
-            def _worker() -> None:
-                try:
-                    setup_path = download_and_prepare_update(
-                        release, progress_callback=_on_progress
-                    )
-                    self.after(
-                        0,
-                        lambda: _on_download_done(True, setup_path, ""),
-                    )
-                except UpdateError as exc:
-                    self.after(
-                        0,
-                        lambda: _on_download_done(False, None, str(exc)),
-                    )
-                except Exception:
-                    logging.exception("업데이트 다운로드 실패")
-                    self.after(
-                        0,
-                        lambda: _on_download_done(
-                            False, None, "다운로드 중 오류가 발생했습니다."
-                        ),
-                    )
-
-            threading.Thread(
-                target=_worker,
-                name="update-download",
-                daemon=True,
-            ).start()
-
-        def _on_download_done(
-            ok: bool, setup_path: Optional[Path], error_message: str
-        ) -> None:
-            if not dialog.winfo_exists():
-                self._update_busy = False
-                phase["name"] = "idle"
-                return
-            try:
-                progress.stop()
-            except tk.TclError:
-                pass
-            progress.configure(mode="determinate", maximum=100)
-
-            if not ok or setup_path is None:
-                self._update_busy = False
-                phase["name"] = "idle"
-                downloaded_setup["path"] = None
-                progress.configure(value=0)
-                progress_label_var.set("실패")
-                status_var.set(error_message)
-                download_button.configure(state="normal", text="다시 다운로드")
-                install_button.configure(state="disabled")
-                return
-
-            downloaded_setup["path"] = setup_path
-            self._update_busy = False
-            phase["name"] = "ready"
-            progress.configure(value=100)
-            progress_label_var.set(
-                f"다운로드 완료 ({_format_bytes(setup_path.stat().st_size)})"
-            )
-            status_var.set(
-                "다운로드가 완료되었습니다. 「설치 및 재시작」을 누르면 "
-                "프로그램 종료 후 설치가 진행됩니다."
-            )
-            download_button.configure(state="disabled", text="다운로드 완료")
-            install_button.configure(state="normal")
-            self._dispatch_notification(
-                "업데이트",
-                f"v{release.version} 다운로드 완료 — 설치를 진행하세요",
-            )
-
-        def _on_install() -> None:
-            if phase["name"] != "ready":
-                return
-            setup_path = downloaded_setup["path"]
-            if setup_path is None or not setup_path.is_file():
-                status_var.set("설치 파일이 없습니다. 다시 다운로드하세요.")
-                phase["name"] = "idle"
-                download_button.configure(state="normal", text="다운로드")
-                install_button.configure(state="disabled")
-                return
-
-            self._update_busy = True
-            phase["name"] = "installing"
-            download_button.configure(state="disabled")
-            install_button.configure(state="disabled")
-            status_var.set(
-                "설치를 시작합니다. 프로그램이 종료된 뒤 설치 창이 나타납니다."
-            )
-            progress_label_var.set("설치 준비 중…")
+            status_var.set("업데이터를 시작합니다…")
             dialog.update_idletasks()
-
             try:
-                launch_update_installer(setup_path)
+                launch_standalone_updater(release, pid=os.getpid())
             except UpdateError as exc:
                 self._update_busy = False
-                phase["name"] = "ready"
-                install_button.configure(state="normal")
                 status_var.set(str(exc))
                 return
             except Exception:
-                logging.exception("업데이트 설치 시작 실패")
+                logging.exception("업데이터 시작 실패")
                 self._update_busy = False
-                phase["name"] = "ready"
-                install_button.configure(state="normal")
-                status_var.set("설치 시작에 실패했습니다.")
+                status_var.set("업데이터 시작에 실패했습니다.")
                 return
 
             dialog.grab_release()
             dialog.destroy()
             self._update_dialog = None
             self._update_busy = False
-            # 헬퍼(ShellExecute)가 뜨고 PID 대기를 시작하도록 짧게 여유
-            self.after(2000, self._quit_application)
+            self._pending_update = None
+            # 메인은 업데이터가 다운로드 후 종료한다
 
-        download_button.configure(command=_on_download)
-        install_button.configure(command=_on_install)
-        install_button.pack(side="right")
-        download_button.pack(side="right", padx=(0, 8))
+        ttk.Button(
+            button_row, text="업데이트 실행", command=_on_run_updater
+        ).pack(side="right")
         ttk.Button(button_row, text="나중에", command=_close_dialog).pack(
             side="right", padx=(0, 8)
         )

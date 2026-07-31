@@ -188,7 +188,7 @@ class TestUpdateConfig(unittest.TestCase):
                 self.assertFalse(config.load_update_check_enabled())
 
     def test_prepare_setup_for_install_copies_to_pending(self) -> None:
-        from startofwork.updater import _prepare_setup_for_install
+        from startofwork.updater import prepare_setup_for_install
 
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "StartOfWorkSetup-9.9.9.exe"
@@ -196,23 +196,32 @@ class TestUpdateConfig(unittest.TestCase):
             local = Path(tmp) / "LocalAppData"
             local.mkdir()
             with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
-                dest = _prepare_setup_for_install(src)
+                dest = prepare_setup_for_install(src)
             self.assertEqual(
                 dest, local / "StartOfWork" / "PendingUpdate" / src.name
             )
             self.assertTrue(dest.is_file())
             self.assertEqual(dest.read_bytes(), b"setup")
 
-    def test_launch_update_installer_uses_shell_execute(self) -> None:
-        from startofwork.updater import launch_update_installer
+    def test_launch_standalone_updater_shell_execute(self) -> None:
+        from startofwork.updater import ReleaseInfo, launch_standalone_updater
 
         with tempfile.TemporaryDirectory() as tmp:
-            setup = Path(tmp) / "StartOfWorkSetup-9.9.9.exe"
-            setup.write_bytes(b"setup")
             local = Path(tmp) / "LocalAppData"
-            local.mkdir()
-            update_dir = Path(tmp) / "Update"
-            update_dir.mkdir()
+            updater_dir = local / "StartOfWork" / "Updater"
+            updater_dir.mkdir(parents=True)
+            updater_exe = updater_dir / "StartOfWorkUpdater.exe"
+            updater_exe.write_bytes(b"mz")
+
+            release = ReleaseInfo(
+                version="1.2.11",
+                tag_name="v1.2.11",
+                html_url="https://example.com/r",
+                asset_name="StartOfWorkSetup-1.2.11.exe",
+                download_url="https://example.com/setup.exe",
+                body="",
+                expected_sha256="A" * 64,
+            )
 
             fake_shell = mock.Mock()
             fake_shell.ShellExecuteW.return_value = 42
@@ -221,25 +230,60 @@ class TestUpdateConfig(unittest.TestCase):
 
             with (
                 mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}),
-                mock.patch(
-                    "startofwork.updater.get_update_download_dir",
-                    return_value=update_dir,
-                ),
                 mock.patch.dict(sys.modules, {"ctypes": fake_ctypes}),
                 mock.patch("sys.platform", "win32"),
             ):
-                launch_update_installer(setup, pid=12345)
+                launch_standalone_updater(release, pid=4242)
 
-            ps1 = update_dir / "apply_update.ps1"
-            self.assertTrue(ps1.is_file())
-            text = ps1.read_text(encoding="utf-8")
-            self.assertIn("PendingUpdate", text)
-            self.assertIn("setup launch error", text)
-            self.assertIn("$targetPid = 12345", text)
             fake_shell.ShellExecuteW.assert_called_once()
             args = fake_shell.ShellExecuteW.call_args[0]
-            self.assertEqual(args[2], "powershell.exe")
-            self.assertIn("apply_update.ps1", args[3])
+            self.assertEqual(args[2], str(updater_exe))
+            params = args[3]
+            self.assertIn("--version", params)
+            self.assertIn("1.2.11", params)
+            self.assertIn("--pid", params)
+            self.assertIn("4242", params)
+            self.assertIn("--sha256", params)
+
+
+class TestStandaloneUpdaterCli(unittest.TestCase):
+    def test_parse_args_and_release(self) -> None:
+        from startofwork_updater.app import parse_args, release_from_args
+
+        args = parse_args(
+            [
+                "--version",
+                "1.2.11",
+                "--download-url",
+                "https://example.com/setup.exe",
+                "--asset-name",
+                "StartOfWorkSetup-1.2.11.exe",
+                "--html-url",
+                "https://example.com/r",
+                "--pid",
+                "99",
+                "--sha256",
+                "B" * 64,
+                "--install-exe",
+                r"C:\App\StartOfWork.exe",
+                "--bootstrapped",
+            ]
+        )
+        self.assertEqual(args.version, "1.2.11")
+        self.assertEqual(args.pid, 99)
+        self.assertTrue(args.bootstrapped)
+        release = release_from_args(args)
+        self.assertEqual(release.version, "1.2.11")
+        self.assertEqual(release.expected_sha256, "B" * 64)
+
+    def test_temp_bootstrap_detect(self) -> None:
+        from startofwork_updater.bootstrap import is_running_from_temp, updater_temp_dir
+
+        temp_dir = updater_temp_dir()
+        self.assertTrue(is_running_from_temp(temp_dir / "StartOfWorkUpdater.exe"))
+        self.assertFalse(
+            is_running_from_temp(Path(r"C:\Users\x\AppData\Local\StartOfWork\Updater\x.exe"))
+        )
 
 
 if __name__ == "__main__":

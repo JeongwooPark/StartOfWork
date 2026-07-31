@@ -268,12 +268,18 @@ def get_installed_exe_path() -> Path:
     return Path(local_app_data) / "StartOfWork" / "StartOfWork.exe"
 
 
-def _ps_single_quote(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+def get_standalone_updater_exe() -> Path:
+    """설치본 독립 업데이터 경로."""
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
+        raise UpdateError("LOCALAPPDATA 경로를 찾을 수 없습니다.")
+    return (
+        Path(local_app_data) / "StartOfWork" / "Updater" / "StartOfWorkUpdater.exe"
+    )
 
 
-def _prepare_setup_for_install(setup_path: Path) -> Path:
-    """Temp 다운로드본을 설치 폴더 쪽으로 복사해 실행 정책을 완화한다."""
+def prepare_setup_for_install(setup_path: Path) -> Path:
+    """Temp 다운로드본을 설치 폴더 PendingUpdate로 복사한다."""
     setup_path = setup_path.resolve()
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if not local_app_data:
@@ -286,116 +292,83 @@ def _prepare_setup_for_install(setup_path: Path) -> Path:
     return dest
 
 
-def launch_update_installer(setup_path: Path, *, pid: Optional[int] = None) -> None:
-    """앱 종료 후 Setup을 실행하는 독립 프로세스를 띄운다.
+# 하위 호환 별칭
+_prepare_setup_for_install = prepare_setup_for_install
 
-    부모(StartOfWork) job/프로세스 트리와 분리하기 위해 ShellExecute로
-    PowerShell 헬퍼만 기동한다. 중첩 Start-Process+DETACHED 는 자식이
-    앱 종료와 함께 죽거나 Setup UI가 안 뜨는 경우가 있다.
-    """
-    setup_path = setup_path.resolve()
-    if not setup_path.is_file():
-        raise UpdateError(f"설치 파일이 없습니다: {setup_path}")
 
-    current_pid = pid or os.getpid()
-    installed_exe = get_installed_exe_path()
-    script_dir = get_update_download_dir()
-    ps1_path = script_dir / "apply_update.ps1"
-    log_path = script_dir / "update.log"
-    install_setup = _prepare_setup_for_install(setup_path)
-
-    # /SILENT: 진행 창만 표시 (VERYSILENT는 UI가 없어 실패처럼 보임)
-    # CLOSEAPPLICATIONS: 잠긴 exe 교체 유도
-    script = "\n".join(
-        [
-            "$ErrorActionPreference = 'Stop'",
-            f"$targetPid = {int(current_pid)}",
-            f"$setup = {_ps_single_quote(str(install_setup))}",
-            f"$exe = {_ps_single_quote(str(installed_exe))}",
-            f"$log = {_ps_single_quote(str(log_path))}",
-            "function Write-UpdateLog([string]$Message) {",
-            "  $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message",
-            "  Add-Content -LiteralPath $log -Value $line -Encoding UTF8",
-            "}",
-            "Write-UpdateLog ('start pid=' + $targetPid)",
-            "Write-UpdateLog ('setup=' + $setup)",
-            "$waited = 0",
-            "while ($waited -lt 180) {",
-            "  $alive = $false",
-            "  if ($targetPid -gt 0) {",
-            "    $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue",
-            "    if ($null -ne $proc) { $alive = $true }",
-            "  }",
-            "  $others = @(Get-Process -Name 'StartOfWork' -ErrorAction SilentlyContinue |"
-            " Where-Object { $_.Id -ne $PID })",
-            "  if ($others.Count -gt 0) { $alive = $true }",
-            "  if (-not $alive) { break }",
-            "  Start-Sleep -Seconds 1",
-            "  $waited++",
-            "}",
-            "Write-UpdateLog ('app exited after ' + $waited + 's')",
-            "Start-Sleep -Seconds 3",
-            "if (-not (Test-Path -LiteralPath $setup)) {",
-            "  Write-UpdateLog 'setup file missing'",
-            "  exit 1",
-            "}",
-            "try { Unblock-File -LiteralPath $setup -ErrorAction SilentlyContinue } catch {}",
-            "Write-UpdateLog 'launching setup'",
-            "$setupArgs = @('/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS')",
-            "$workDir = Split-Path -Parent $setup",
-            "try {",
-            "  $p = Start-Process -FilePath $setup -ArgumentList $setupArgs"
-            " -WorkingDirectory $workDir -PassThru -Wait",
-            "  if ($null -eq $p) {",
-            "    Write-UpdateLog 'setup Start-Process returned null'",
-            "    exit 1",
-            "  }",
-            "  Write-UpdateLog ('setup exitCode=' + $p.ExitCode)",
-            "  if ($p.ExitCode -ne 0) { exit $p.ExitCode }",
-            "} catch {",
-            "  Write-UpdateLog ('setup launch error: ' + $_.Exception.Message)",
-            "  exit 1",
-            "}",
-            "Start-Sleep -Seconds 1",
-            "if (Test-Path -LiteralPath $exe) {",
-            "  Write-UpdateLog 'restarting app'",
-            "  Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)",
-            "} else {",
-            "  Write-UpdateLog 'installed exe missing'",
-            "}",
-            "Write-UpdateLog 'done'",
-        ]
-    )
-    ps1_path.write_text(script + "\n", encoding="utf-8")
-
+def launch_standalone_updater(
+    release: ReleaseInfo,
+    *,
+    pid: Optional[int] = None,
+    install_exe: Optional[Path] = None,
+) -> None:
+    """독립형 StartOfWorkUpdater를 ShellExecute로 기동한다."""
     if sys.platform != "win32":
         raise UpdateError("Windows에서만 업데이트를 적용할 수 있습니다.")
 
-    # ShellExecute: 현재 프로세스의 자식/job에 묶이지 않음 → 앱 종료 후에도 생존
+    updater_exe = get_standalone_updater_exe()
+    if not updater_exe.is_file():
+        # 개발/포터블: 메인 exe 옆 Updater
+        if getattr(sys, "frozen", False):
+            sibling = Path(sys.executable).resolve().parent / "Updater" / (
+                "StartOfWorkUpdater.exe"
+            )
+            if sibling.is_file():
+                updater_exe = sibling
+        if not updater_exe.is_file():
+            raise UpdateError(
+                "업데이터 프로그램이 없습니다.\n"
+                f"경로: {updater_exe}\n"
+                "StartOfWorkSetup을 다시 설치해 주세요."
+            )
+
+    current_pid = int(pid or os.getpid())
+    main_exe = str(install_exe or get_installed_exe_path())
+
+    def _win_quote(value: str) -> str:
+        if not value:
+            return '""'
+        if any(ch in value for ch in (' ', '\t', '"')):
+            return '"' + value.replace('"', '\\"') + '"'
+        return value
+
+    parts = [
+        "--version",
+        _win_quote(release.version),
+        "--download-url",
+        _win_quote(release.download_url),
+        "--asset-name",
+        _win_quote(release.asset_name),
+        "--html-url",
+        _win_quote(release.html_url or ""),
+        "--pid",
+        str(current_pid),
+        "--install-exe",
+        _win_quote(main_exe),
+    ]
+    if release.expected_sha256:
+        parts.extend(["--sha256", _win_quote(release.expected_sha256)])
+    params = " ".join(parts)
+
     import ctypes
 
-    params = (
-        "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden "
-        f"-File {_ps_single_quote(str(ps1_path))}"
-    )
     rc = int(
         ctypes.windll.shell32.ShellExecuteW(
             None,
             "open",
-            "powershell.exe",
+            str(updater_exe),
             params,
-            str(script_dir),
-            0,  # SW_HIDE
+            str(updater_exe.parent),
+            1,  # SW_SHOWNORMAL — 진행률 창 표시
         )
     )
     if rc <= 32:
-        raise UpdateError(f"업데이트 헬퍼 기동 실패 (ShellExecute={rc})")
+        raise UpdateError(f"업데이터 기동 실패 (ShellExecute={rc})")
     logging.info(
-        "업데이트 설치 스크립트 시작: pid=%s setup=%s helper=%s log=%s",
+        "독립 업데이터 시작: exe=%s version=%s pid=%s",
+        updater_exe,
+        release.version,
         current_pid,
-        install_setup,
-        ps1_path,
-        log_path,
     )
 
 
@@ -408,7 +381,6 @@ def download_and_prepare_update(
         release, progress_callback=progress_callback
     )
     if progress_callback is not None:
-        # 검증 단계 표시용: total=total, downloaded=total 유지
         size = path.stat().st_size
         progress_callback(size, size)
     verify_download(path, release.expected_sha256)

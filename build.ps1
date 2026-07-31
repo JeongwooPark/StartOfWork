@@ -12,11 +12,13 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$AppVersion = "1.2.10"
+$AppVersion = "1.2.11"
 $AppDirName = "StartOfWork"
+$UpdaterDirName = "StartOfWorkUpdater"
 $VersionedZipName = "StartOfWork-$AppVersion.zip"
 $VersionedSetupName = "StartOfWorkSetup-$AppVersion.exe"
 $DistAppDir = Join-Path ".\dist" $AppDirName
+$DistUpdaterDir = Join-Path ".\dist" $UpdaterDirName
 $CertDir = Join-Path $PSScriptRoot "certs"
 $PfxPath = Join-Path $CertDir "StartOfWorkCodeSign.pfx"
 $PwdPath = Join-Path $CertDir "pfx.password"
@@ -158,6 +160,7 @@ function Sign-SingleFile([string]$Path) {
 Write-Host "==> 이전 빌드 산출물 정리 (v$AppVersion)"
 Remove-Item -Recurse -Force .\build -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $DistAppDir -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $DistUpdaterDir -ErrorAction SilentlyContinue
 Remove-Item -Force `
     .\dist\StartOfWork.exe, `
     .\dist\$VersionedZipName, `
@@ -165,7 +168,7 @@ Remove-Item -Force `
     .\dist\$VersionedSetupName `
     -ErrorAction SilentlyContinue
 
-Write-Host "==> PyInstaller 빌드 (onedir, console off)"
+Write-Host "==> PyInstaller 빌드 — 메인 (onedir)"
 .\.venv\Scripts\pyinstaller.exe `
     --noconfirm `
     --clean `
@@ -175,6 +178,25 @@ $builtExe = Join-Path $DistAppDir "StartOfWork.exe"
 if (-not (Test-Path $builtExe)) {
     throw "빌드 실패: $builtExe 없음"
 }
+
+Write-Host "==> PyInstaller 빌드 — 업데이터 (onedir)"
+.\.venv\Scripts\pyinstaller.exe `
+    --noconfirm `
+    --clean `
+    .\updater.spec
+
+$builtUpdater = Join-Path $DistUpdaterDir "StartOfWorkUpdater.exe"
+if (-not (Test-Path $builtUpdater)) {
+    throw "업데이터 빌드 실패: $builtUpdater 없음"
+}
+
+# 메인 설치 폴더에 Updater\ 로 포함
+$embeddedUpdater = Join-Path $DistAppDir "Updater"
+if (Test-Path $embeddedUpdater) {
+    Remove-Item -Recurse -Force $embeddedUpdater
+}
+Copy-Item -Recurse -Force $DistUpdaterDir $embeddedUpdater
+Write-Host "==> 업데이터를 dist\StartOfWork\Updater\ 에 포함"
 
 Copy-Item -Force .\StartOfWork.ico (Join-Path $DistAppDir "StartOfWork.ico") -ErrorAction SilentlyContinue
 
