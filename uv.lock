@@ -443,7 +443,7 @@ wheels = [
 
 [[package]]
 name = "startofwork"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
     { name = "pillow" },
     { name = "pystray" },

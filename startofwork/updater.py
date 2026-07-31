@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -207,6 +208,7 @@ def download_release_asset(
             except ValueError:
                 total = 0
             downloaded = 0
+            last_progress_at = 0.0
             if progress_callback is not None:
                 progress_callback(0, total)
             with temp_path.open("wb") as out:
@@ -217,7 +219,13 @@ def download_release_asset(
                     out.write(chunk)
                     downloaded += len(chunk)
                     if progress_callback is not None:
-                        progress_callback(downloaded, total)
+                        now = time.monotonic()
+                        if (
+                            now - last_progress_at >= 0.15
+                            or (total > 0 and downloaded >= total)
+                        ):
+                            last_progress_at = now
+                            progress_callback(downloaded, total)
     except HTTPError as exc:
         raise UpdateError(f"다운로드 실패 (HTTP {exc.code})") from exc
     except URLError as exc:
@@ -268,31 +276,47 @@ def get_installed_exe_path() -> Path:
     return Path(local_app_data) / "StartOfWork" / "StartOfWork.exe"
 
 
+def get_pending_update_dir() -> Path:
+    """Setup 다운로드·설치 대기 폴더."""
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
+        path = get_update_download_dir() / "PendingUpdate"
+    else:
+        path = Path(local_app_data) / "StartOfWork" / "PendingUpdate"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def get_standalone_updater_exe() -> Path:
-    """설치본 독립 업데이터 경로."""
+    """독립 업데이터 경로 (앱 폴더 밖 — 설치 잠금·TEMP 복사 회피)."""
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if not local_app_data:
         raise UpdateError("LOCALAPPDATA 경로를 찾을 수 없습니다.")
-    return (
+    primary = (
+        Path(local_app_data) / "StartOfWorkUpdater" / "StartOfWorkUpdater.exe"
+    )
+    if primary.is_file():
+        return primary
+    legacy = (
         Path(local_app_data) / "StartOfWork" / "Updater" / "StartOfWorkUpdater.exe"
     )
+    if legacy.is_file():
+        return legacy
+    return primary
 
 
 def prepare_setup_for_install(setup_path: Path) -> Path:
-    """Temp 다운로드본을 설치 폴더 PendingUpdate로 복사한다."""
+    """Setup을 PendingUpdate에 둔다. 이미 그 폴더면 복사하지 않는다."""
     setup_path = setup_path.resolve()
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if not local_app_data:
+    pending_dir = get_pending_update_dir().resolve()
+    if setup_path.parent == pending_dir:
         return setup_path
-    pending_dir = Path(local_app_data) / "StartOfWork" / "PendingUpdate"
-    pending_dir.mkdir(parents=True, exist_ok=True)
     dest = pending_dir / setup_path.name
     if dest.resolve() != setup_path:
         shutil.copy2(setup_path, dest)
     return dest
 
 
-# 하위 호환 별칭
 _prepare_setup_for_install = prepare_setup_for_install
 
 
@@ -308,13 +332,15 @@ def launch_standalone_updater(
 
     updater_exe = get_standalone_updater_exe()
     if not updater_exe.is_file():
-        # 개발/포터블: 메인 exe 옆 Updater
         if getattr(sys, "frozen", False):
-            sibling = Path(sys.executable).resolve().parent / "Updater" / (
-                "StartOfWorkUpdater.exe"
-            )
-            if sibling.is_file():
-                updater_exe = sibling
+            parent = Path(sys.executable).resolve().parent
+            for candidate in (
+                parent.parent / "StartOfWorkUpdater" / "StartOfWorkUpdater.exe",
+                parent / "Updater" / "StartOfWorkUpdater.exe",
+            ):
+                if candidate.is_file():
+                    updater_exe = candidate
+                    break
         if not updater_exe.is_file():
             raise UpdateError(
                 "업데이터 프로그램이 없습니다.\n"
@@ -328,7 +354,7 @@ def launch_standalone_updater(
     def _win_quote(value: str) -> str:
         if not value:
             return '""'
-        if any(ch in value for ch in (' ', '\t', '"')):
+        if any(ch in value for ch in (" ", "\t", '"')):
             return '"' + value.replace('"', '\\"') + '"'
         return value
 
@@ -359,7 +385,7 @@ def launch_standalone_updater(
             str(updater_exe),
             params,
             str(updater_exe.parent),
-            1,  # SW_SHOWNORMAL — 진행률 창 표시
+            1,
         )
     )
     if rc <= 32:
@@ -376,9 +402,14 @@ def download_and_prepare_update(
     release: ReleaseInfo,
     *,
     progress_callback: Optional[ProgressCallback] = None,
+    dest_dir: Optional[Path] = None,
 ) -> Path:
+    """Setup을 PendingUpdate(또는 dest_dir)에 직접 받고 검증한다."""
+    target = dest_dir or get_pending_update_dir()
     path = download_release_asset(
-        release, progress_callback=progress_callback
+        release,
+        dest_dir=target,
+        progress_callback=progress_callback,
     )
     if progress_callback is not None:
         size = path.stat().st_size

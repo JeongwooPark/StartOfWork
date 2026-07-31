@@ -44,17 +44,27 @@ def terminate_main_app(*, target_pid: int, log_path: Path) -> None:
     if target_pid > 0:
         _terminate_pid(target_pid)
 
-    result = subprocess.run(
-        ["taskkill", "/F", "/IM", "StartOfWork.exe", "/T"],
+    # PID 종료 후에도 남아 있을 때만 taskkill
+    check = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq StartOfWork.exe", "/NH"],
         capture_output=True,
         text=True,
         check=False,
     )
-    write_update_log(
-        log_path,
-        f"taskkill StartOfWork.exe exit={result.returncode} "
-        f"out={(result.stdout or '').strip()} err={(result.stderr or '').strip()}",
-    )
+    if "StartOfWork.exe" in (check.stdout or ""):
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", "StartOfWork.exe", "/T"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        write_update_log(
+            log_path,
+            f"taskkill StartOfWork.exe exit={result.returncode} "
+            f"out={(result.stdout or '').strip()} err={(result.stderr or '').strip()}",
+        )
+    else:
+        write_update_log(log_path, "no StartOfWork.exe remaining after TerminateProcess")
     time.sleep(2)
     write_update_log(log_path, "main process terminate done")
 

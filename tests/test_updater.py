@@ -203,21 +203,34 @@ class TestUpdateConfig(unittest.TestCase):
             self.assertTrue(dest.is_file())
             self.assertEqual(dest.read_bytes(), b"setup")
 
+    def test_prepare_skips_copy_when_already_pending(self) -> None:
+        from startofwork.updater import get_pending_update_dir, prepare_setup_for_install
+
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "LocalAppData"
+            local.mkdir()
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+                pending = get_pending_update_dir()
+                src = pending / "StartOfWorkSetup-9.9.9.exe"
+                src.write_bytes(b"setup")
+                dest = prepare_setup_for_install(src)
+            self.assertEqual(dest, src.resolve())
+
     def test_launch_standalone_updater_shell_execute(self) -> None:
         from startofwork.updater import ReleaseInfo, launch_standalone_updater
 
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / "LocalAppData"
-            updater_dir = local / "StartOfWork" / "Updater"
+            updater_dir = local / "StartOfWorkUpdater"
             updater_dir.mkdir(parents=True)
             updater_exe = updater_dir / "StartOfWorkUpdater.exe"
             updater_exe.write_bytes(b"mz")
 
             release = ReleaseInfo(
-                version="1.2.11",
-                tag_name="v1.2.11",
+                version="1.2.12",
+                tag_name="v1.2.12",
                 html_url="https://example.com/r",
-                asset_name="StartOfWorkSetup-1.2.11.exe",
+                asset_name="StartOfWorkSetup-1.2.12.exe",
                 download_url="https://example.com/setup.exe",
                 body="",
                 expected_sha256="A" * 64,
@@ -240,7 +253,7 @@ class TestUpdateConfig(unittest.TestCase):
             self.assertEqual(args[2], str(updater_exe))
             params = args[3]
             self.assertIn("--version", params)
-            self.assertIn("1.2.11", params)
+            self.assertIn("1.2.12", params)
             self.assertIn("--pid", params)
             self.assertIn("4242", params)
             self.assertIn("--sha256", params)
@@ -253,11 +266,11 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
         args = parse_args(
             [
                 "--version",
-                "1.2.11",
+                "1.2.12",
                 "--download-url",
                 "https://example.com/setup.exe",
                 "--asset-name",
-                "StartOfWorkSetup-1.2.11.exe",
+                "StartOfWorkSetup-1.2.12.exe",
                 "--html-url",
                 "https://example.com/r",
                 "--pid",
@@ -269,21 +282,24 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
                 "--bootstrapped",
             ]
         )
-        self.assertEqual(args.version, "1.2.11")
+        self.assertEqual(args.version, "1.2.12")
         self.assertEqual(args.pid, 99)
         self.assertTrue(args.bootstrapped)
         release = release_from_args(args)
-        self.assertEqual(release.version, "1.2.11")
+        self.assertEqual(release.version, "1.2.12")
         self.assertEqual(release.expected_sha256, "B" * 64)
 
-    def test_temp_bootstrap_detect(self) -> None:
-        from startofwork_updater.bootstrap import is_running_from_temp, updater_temp_dir
+    def test_temp_bootstrap_only_for_legacy_app_path(self) -> None:
+        from startofwork_updater.bootstrap import needs_temp_bootstrap
 
-        temp_dir = updater_temp_dir()
-        self.assertTrue(is_running_from_temp(temp_dir / "StartOfWorkUpdater.exe"))
-        self.assertFalse(
-            is_running_from_temp(Path(r"C:\Users\x\AppData\Local\StartOfWork\Updater\x.exe"))
+        legacy = Path(
+            r"C:\Users\x\AppData\Local\StartOfWork\Updater\StartOfWorkUpdater.exe"
         )
+        external = Path(
+            r"C:\Users\x\AppData\Local\StartOfWorkUpdater\StartOfWorkUpdater.exe"
+        )
+        self.assertTrue(needs_temp_bootstrap(legacy))
+        self.assertFalse(needs_temp_bootstrap(external))
 
 
 if __name__ == "__main__":

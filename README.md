@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.11
+# 출근 근태 자동 실행 (StartOfWork) v1.2.12
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.11
+**버전:** 1.2.12
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -12,7 +12,8 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 > **1.2.8부터** 업데이트·재설치 시 `config.json` 등 사용자 설정을 보존합니다.  
 > **1.2.9부터** 업데이트 헬퍼를 ShellExecute로 분리 기동해 앱 종료 후에도 Setup이 실행됩니다.  
 > **1.2.10부터** 트레이 툴팁이 퇴근·자정·공휴일 상태를 반영합니다.  
-> **1.2.11부터** 다운로드·설치는 독립형 **StartOfWorkUpdater**가 담당합니다. (1.2.10 이하는 Setup **수동 설치 1회** 필요)
+> **1.2.11부터** 다운로드·설치는 독립형 **StartOfWorkUpdater**가 담당합니다.  
+> **1.2.12부터** 업데이터를 `%LOCALAPPDATA%\StartOfWorkUpdater`에 분리 설치해 TEMP 복사·용량을 줄입니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -46,7 +47,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.11.exe`
+결과물: `dist\StartOfWorkSetup-1.2.12.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -66,7 +67,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` (exe + `_internal` + `Updater\` 등), `dist\StartOfWork-1.2.11.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.12.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -145,13 +146,14 @@ uv run python main.py
 - 새 버전이 있으면 트레이 알림 표시
 - 트레이 메뉴 **업데이트 확인** → 결과를 **트레이 알림**으로 표시 후 대화상자
 - **1.2.11+**: 대화상자 **업데이트 실행** → 독립형 `StartOfWorkUpdater`
-  - 자동 다운로드(진행률 표시) → 메인 종료 → Setup 무인 설치 → 메인 재시작 → 업데이터 종료
+  - 자동 다운로드(진행률) → 메인 종료 → Setup 무인 설치 → 메인 재시작 → 업데이터 종료
   - 다운로드 실패 시 로그 UI + GitHub 릴리스 열기 + Setup 파일 수동 선택
-  - 업데이터는 설치 잠금 방지를 위해 `%TEMP%\StartOfWorkUpdate\Updater`에서 실행
+  - **1.2.12+**: 업데이터는 `%LOCALAPPDATA%\StartOfWorkUpdater`에 설치 (앱과 분리, TEMP 전체 복사 없음)
+  - Setup은 `%LOCALAPPDATA%\StartOfWork\PendingUpdate`에 직접 다운로드
 - 설치 파일: `StartOfWorkSetup-{version}.exe` (Release에 첨부)
 - Release 본문에 SHA256이 있으면 다운로드 후 검증
 - `config.json`, 출근 상태, `chrome_profile/` 등 사용자 데이터는 설치 시 유지
-- **1.2.10 이하에서 1.2.11로 올릴 때**는 Setup을 **한 번 수동 설치**해야 업데이터가 포함됩니다
+- **1.2.10 이하에서 올릴 때**는 Setup을 **한 번 수동 설치**해야 업데이터가 포함됩니다
 
 ### 로그인 성공/실패 판정 (GUI 검증 시)
 
@@ -242,6 +244,14 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.12
+
+- 업데이터 최적화
+  - 설치 경로를 `%LOCALAPPDATA%\StartOfWorkUpdater`로 분리 (앱 업데이트 시 잠금·TEMP 전체 복사 제거)
+  - Setup을 `PendingUpdate`에 직접 다운로드 (이중 복사 제거)
+  - 다운로드 진행률 UI 콜백 스로틀, 업데이터 번들 excludes 강화, `startofwork.__init__` 슬림화
+- 산출물: `StartOfWorkSetup-1.2.12.exe`, `StartOfWork-1.2.12.zip`
 
 ### v1.2.11
 

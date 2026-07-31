@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$AppVersion = "1.2.11"
+$AppVersion = "1.2.12"
 $AppDirName = "StartOfWork"
 $UpdaterDirName = "StartOfWorkUpdater"
 $VersionedZipName = "StartOfWork-$AppVersion.zip"
@@ -121,11 +121,22 @@ function Sign-AppDirectory([string]$AppDir) {
     $password = (Get-Content -Path $PwdPath -Raw).Trim()
     Write-Host "==> 코드 서명: $AppDir ($signTool)"
 
-    $mainExe = Join-Path $AppDir "StartOfWork.exe"
+    $mainExe = $null
+    foreach ($name in @("StartOfWork.exe", "StartOfWorkUpdater.exe")) {
+        $candidate = Join-Path $AppDir $name
+        if (Test-Path $candidate) {
+            $mainExe = $candidate
+            break
+        }
+    }
+    if (-not $mainExe) {
+        throw "서명 대상 exe 없음: $AppDir"
+    }
     Sign-File -Path $mainExe -SignTool $signTool -Pfx $PfxPath -Password $password -Required | Out-Null
+    $mainResolved = (Resolve-Path $mainExe).Path
 
     $targets = Get-ChildItem -Path $AppDir -Recurse -Include *.dll,*.pyd,*.exe -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -ne (Resolve-Path $mainExe).Path } |
+        Where-Object { $_.FullName -ne $mainResolved } |
         Sort-Object -Property FullName -Unique
 
     $ok = 1
@@ -190,15 +201,15 @@ if (-not (Test-Path $builtUpdater)) {
     throw "업데이터 빌드 실패: $builtUpdater 없음"
 }
 
-# 메인 설치 폴더에 Updater\ 로 포함
-$embeddedUpdater = Join-Path $DistAppDir "Updater"
-if (Test-Path $embeddedUpdater) {
-    Remove-Item -Recurse -Force $embeddedUpdater
+# 앱 폴더에 Updater를 넣지 않음 (설치 잠금·용량). 별도 StartOfWorkUpdater\ 유지.
+$legacyEmbedded = Join-Path $DistAppDir "Updater"
+if (Test-Path $legacyEmbedded) {
+    Remove-Item -Recurse -Force $legacyEmbedded
+    Write-Host "==> dist\StartOfWork\Updater 제거 (앱과 분리)"
 }
-Copy-Item -Recurse -Force $DistUpdaterDir $embeddedUpdater
-Write-Host "==> 업데이터를 dist\StartOfWork\Updater\ 에 포함"
 
 Copy-Item -Force .\StartOfWork.ico (Join-Path $DistAppDir "StartOfWork.ico") -ErrorAction SilentlyContinue
+Copy-Item -Force .\StartOfWork.ico (Join-Path $DistUpdaterDir "StartOfWork.ico") -ErrorAction SilentlyContinue
 
 $distConfig = Join-Path $DistAppDir "config.json"
 if (-not (Test-Path $distConfig)) {
@@ -208,20 +219,29 @@ if (-not (Test-Path $distConfig)) {
 
 if (-not $SkipSign) {
     Sign-AppDirectory -AppDir $DistAppDir
+    Sign-AppDirectory -AppDir $DistUpdaterDir
 } else {
     Write-Host "==> 서명 생략 (-SkipSign)"
 }
 
-# 포터블 zip (서명 후)
+# 포터블 zip: StartOfWork + StartOfWorkUpdater
 $zipPath = Join-Path ".\dist" $VersionedZipName
 if (Test-Path $zipPath) {
     Remove-Item -Force $zipPath
 }
-Compress-Archive -Path (Join-Path $DistAppDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+$zipStage = Join-Path ".\dist" "_zip_stage"
+Remove-Item -Recurse -Force $zipStage -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $zipStage | Out-Null
+Copy-Item -Recurse -Force $DistAppDir (Join-Path $zipStage "StartOfWork")
+Copy-Item -Recurse -Force $DistUpdaterDir (Join-Path $zipStage "StartOfWorkUpdater")
+Compress-Archive -Path (Join-Path $zipStage "*") -DestinationPath $zipPath -CompressionLevel Optimal
+Remove-Item -Recurse -Force $zipStage
 
 $exeSize = (Get-Item $builtExe).Length
+$updaterSize = (Get-Item $builtUpdater).Length
 $zipSize = (Get-Item $zipPath).Length
 Write-Host ("==> 완료: dist\StartOfWork\StartOfWork.exe ({0:N1} MB)" -f ($exeSize / 1MB))
+Write-Host ("==> 완료: dist\StartOfWorkUpdater\StartOfWorkUpdater.exe ({0:N1} MB)" -f ($updaterSize / 1MB))
 Write-Host ("==> 완료: dist\{0} ({1:N1} MB)" -f $VersionedZipName, ($zipSize / 1MB))
 
 if (-not $Installer) {

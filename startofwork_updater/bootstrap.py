@@ -1,4 +1,4 @@
-"""설치 폴더 잠금 방지를 위해 TEMP로 onedir을 복사한 뒤 재기동."""
+"""설치 폴더 잠금 방지용 TEMP 재기동 (1.2.12+: 앱 밖 설치로 기본 불필요)."""
 
 from __future__ import annotations
 
@@ -29,8 +29,19 @@ def is_running_from_temp(exe: Path) -> bool:
         return False
 
 
+def needs_temp_bootstrap(exe: Path) -> bool:
+    """앱 설치 트리(StartOfWork\\Updater) 안에서만 TEMP 복사가 필요하다."""
+    try:
+        parts = [p.lower() for p in exe.resolve().parts]
+        for i in range(len(parts) - 1):
+            if parts[i] == "startofwork" and parts[i + 1] == "updater":
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def frozen_bundle_root(exe: Path) -> Path:
-    """PyInstaller onedir: exe 옆 _internal 이 있으면 그 폴더가 번들 루트."""
     return exe.resolve().parent
 
 
@@ -53,19 +64,21 @@ def copy_bundle_to_temp(exe: Path) -> Path:
 
 
 def relaunch_from_temp(argv: list[str]) -> int:
-    """설치본이면 TEMP 복사본으로 재실행 후 0. 이미 TEMP/개발 실행이면 -1."""
+    """레거시(앱 안 Updater)만 TEMP 복사 재기동. 그 외는 -1."""
     if not getattr(sys, "frozen", False):
         return -1
 
     exe = Path(sys.executable)
     if is_running_from_temp(exe):
         return -1
+    if not needs_temp_bootstrap(exe):
+        return -1
 
     dest_exe = copy_bundle_to_temp(exe)
     args = [str(dest_exe), *argv]
     if "--bootstrapped" not in args:
         args.append("--bootstrapped")
-    logging.info("업데이터 TEMP 재기동: %s", dest_exe)
+    logging.info("업데이터 TEMP 재기동(레거시): %s", dest_exe)
     creationflags = 0
     if sys.platform == "win32":
         creationflags = (
