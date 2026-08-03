@@ -2,7 +2,7 @@
 
 from datetime import time as dt_time
 
-APP_VERSION = "1.2.15"
+APP_VERSION = "1.2.16"
 APP_TITLE = "출근 근태 자동 실행"
 # GitHub Releases 업데이트 (1.2.0+)
 GITHUB_REPO_OWNER = "JeongwooPark"
@@ -38,12 +38,14 @@ DEFAULT_ACTIVE_END_TIME = dt_time(18, 0)
 DEFAULT_AUTO_CHECKOUT_TIME = dt_time(18, 0)
 
 HOLIDAY_API_URL = (
-    "http://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/getRestDeInfo"
+    "https://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/getRestDeInfo"
 )
 HOLIDAY_SERVICE_KEY = (
     "znknClAY/dhPMDrO40Yk0kPs8GxiPP8kiTO0YiybQPYkJa7+"
     "Tyl+KkvE07Mw6MNhsFyqz10LBN8vs3WIkZ6asQ=="
 )
+# 새벽 API 장애(점검 등) 시 재시도 시각
+HOLIDAY_API_RETRY_TIME = dt_time(8, 0)
 
 GWL_STYLE = -16
 WS_MAXIMIZEBOX = 0x00010000

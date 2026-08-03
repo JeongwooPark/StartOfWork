@@ -599,7 +599,7 @@ wheels = [
 
 [[package]]
 name = "startofwork"
-version = "1.2.15"
+version = "1.2.16"
 source = { virtual = "." }
 dependencies = [
     { name = "keyring" },

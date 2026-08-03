@@ -25,6 +25,7 @@ from startofwork.attendance_state import (
     is_retry_due,
 )
 from startofwork.browser import (
+    consume_checkout_rearm,
     is_checkout_job_running,
     open_attendance_page,
     open_checkout_page,
@@ -61,7 +62,7 @@ from startofwork.constants import (
     SWP_NOZORDER,
     WS_MAXIMIZEBOX,
 )
-from startofwork.holidays import get_non_workday_reason
+from startofwork.holidays import get_non_workday_reason, is_holiday_api_retry_due
 from startofwork.lock_state import get_windows_lock_state
 from startofwork.notifications import set_notification_handler
 from startofwork.paths import APP_ICON_FILE
@@ -982,6 +983,8 @@ class LockStateMonitor(tk.Tk):
             return
         if is_checkout_job_running():
             return
+        if consume_checkout_rearm():
+            self._checkout_triggered_date = None
         if is_auth_failure_blocking("check_out", today=now.date()):
             return
 
@@ -1377,21 +1380,26 @@ class LockStateMonitor(tk.Tk):
         logging.info("공휴일 GUI 갱신 완료 — %s", status_text)
 
     def _update_holiday_display(self, now: datetime) -> None:
-        """날짜가 바뀐 경우(자정 경과) 공휴일 정보를 다시 확인·표시"""
+        """자정 경과 또는 API 실패 후 08:00 재시도 시 공휴일 정보를 다시 확인·표시."""
         today = now.date()
-        if self._holiday_info_date == today:
+        if self._holiday_info_date != today:
+            # 캐시/주말 판정으로 즉시 갱신 후 API는 백그라운드
+            self._refresh_holidays_and_display(
+                force=False,
+                reason="자정 경과(캐시)",
+                cache_only=True,
+            )
+            self._schedule_holiday_refresh(
+                force=True,
+                reason="자정 경과(백그라운드)",
+            )
             return
 
-        # 캐시/주말 판정으로 즉시 갱신 후 API는 백그라운드
-        self._refresh_holidays_and_display(
-            force=False,
-            reason="자정 경과(캐시)",
-            cache_only=True,
-        )
-        self._schedule_holiday_refresh(
-            force=True,
-            reason="자정 경과(백그라운드)",
-        )
+        if is_holiday_api_retry_due(now):
+            self._schedule_holiday_refresh(
+                force=True,
+                reason="공휴일 API 재시도(08:00)",
+            )
 
     def _set_state_display(
         self,

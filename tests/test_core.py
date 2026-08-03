@@ -597,6 +597,67 @@ class TestHolidays(unittest.TestCase):
                 self.assertEqual(reason, "공휴일(제헌절)")
                 fetch.assert_not_called()
 
+    def test_api_failure_schedules_8am_retry(self) -> None:
+        from startofwork import holidays
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = Path(tmp) / "holiday_cache.json"
+            cache_file.write_text(
+                json.dumps(
+                    {
+                        "checked_date": "2026-07-31",
+                        "year": 2026,
+                        "month": 7,
+                        "holidays": {"2026-07-17": "제헌절"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                holidays, "HOLIDAY_CACHE_FILE", cache_file
+            ), mock.patch.object(
+                holidays,
+                "fetch_public_holidays",
+                side_effect=TimeoutError("boom"),
+            ), mock.patch(
+                "startofwork.holidays.datetime"
+            ) as dt_mod:
+                holidays.clear_holiday_memory_cache()
+                fixed_now = datetime(2026, 8, 3, 0, 0, 20)
+                dt_mod.now.return_value = fixed_now
+                dt_mod.side_effect = lambda *a, **k: datetime(*a, **k)
+                dt_mod.combine = datetime.combine
+                dt_mod.fromisoformat = datetime.fromisoformat
+
+                holidays.refresh_holiday_cache_if_needed(
+                    date(2026, 8, 3), force=True
+                )
+                retry_at = holidays.peek_holiday_api_retry_at()
+                self.assertEqual(retry_at, datetime(2026, 8, 3, 8, 0))
+                self.assertFalse(
+                    holidays.is_holiday_api_retry_due(datetime(2026, 8, 3, 7, 59))
+                )
+                self.assertTrue(
+                    holidays.is_holiday_api_retry_due(datetime(2026, 8, 3, 8, 0))
+                )
+
+    def test_next_holiday_api_retry_at(self) -> None:
+        from startofwork.holidays import next_holiday_api_retry_at
+
+        self.assertEqual(
+            next_holiday_api_retry_at(datetime(2026, 8, 3, 0, 5)),
+            datetime(2026, 8, 3, 8, 0),
+        )
+        self.assertEqual(
+            next_holiday_api_retry_at(datetime(2026, 8, 3, 8, 0)),
+            datetime(2026, 8, 4, 8, 0),
+        )
+        self.assertEqual(
+            next_holiday_api_retry_at(datetime(2026, 8, 3, 9, 0)),
+            datetime(2026, 8, 4, 8, 0),
+        )
+
 
 class TestPollInterval(unittest.TestCase):
     def test_fast_when_check_in_pending_in_hours(self) -> None:
@@ -1052,30 +1113,218 @@ class TestVerifyAndPeek(unittest.TestCase):
             save.assert_not_called()
             fail.assert_called_once()
 
+    def test_is_effectively_enabled_respects_aria_and_class(self) -> None:
+        from startofwork import browser
+
+        enabled = mock.Mock()
+        enabled.is_enabled.return_value = True
+        enabled.get_attribute.side_effect = lambda name: {
+            "aria-disabled": "false",
+            "class": "btn primary",
+        }.get(name)
+
+        aria_disabled = mock.Mock()
+        aria_disabled.is_enabled.return_value = True
+        aria_disabled.get_attribute.side_effect = lambda name: {
+            "aria-disabled": "true",
+            "class": "btn",
+        }.get(name)
+
+        class_disabled = mock.Mock()
+        class_disabled.is_enabled.return_value = True
+        class_disabled.get_attribute.side_effect = lambda name: {
+            "aria-disabled": "",
+            "class": "btn is-disabled",
+        }.get(name)
+
+        self.assertTrue(browser._is_effectively_enabled(enabled))
+        self.assertFalse(browser._is_effectively_enabled(aria_disabled))
+        self.assertFalse(browser._is_effectively_enabled(class_disabled))
+
+    def test_check_out_verified_requires_disabled_evidence(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+
+        with mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": None,
+                "out_time": None,
+                "check_in_present": False,
+                "check_out_present": True,
+                "check_in_enabled": False,
+                "check_out_enabled": True,
+            },
+        ):
+            self.assertFalse(browser._check_out_verified(driver))
+
+        with mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": None,
+                "out_time": None,
+                "check_in_present": True,
+                "check_out_present": True,
+                "check_in_enabled": False,
+                "check_out_enabled": False,
+            },
+        ):
+            self.assertTrue(browser._check_out_verified(driver))
+
+        with mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": None,
+                "out_time": None,
+                "check_in_present": False,
+                "check_out_present": False,
+                "check_in_enabled": False,
+                "check_out_enabled": False,
+            },
+        ):
+            self.assertFalse(browser._check_out_verified(driver))
+
+        with mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": "08:30:06",
+                "out_time": "08:39:32",
+                "check_in_present": True,
+                "check_out_present": True,
+                "check_in_enabled": False,
+                "check_out_enabled": False,
+            },
+        ):
+            self.assertTrue(browser._check_out_verified(driver))
+
     def test_peek_attendance_ui_state(self) -> None:
         from startofwork import browser
 
         driver = mock.Mock()
-        check_in_btn = mock.Mock()
-        check_out_btn = mock.Mock()
 
         with mock.patch(
             "startofwork.browser.wait_for_attendance_url", return_value=True
+        ), mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": None,
+                "out_time": None,
+                "check_in_present": True,
+                "check_out_present": False,
+                "check_in_enabled": True,
+                "check_out_enabled": False,
+            },
         ):
-            with mock.patch(
-                "startofwork.browser.find_button_by_xpaths",
-                side_effect=[check_in_btn, None],
-            ):
-                self.assertEqual(
-                    browser.peek_attendance_ui_state(driver), "not_checked_in"
-                )
-            with mock.patch(
-                "startofwork.browser.find_button_by_xpaths",
-                side_effect=[None, check_out_btn],
-            ):
-                self.assertEqual(
-                    browser.peek_attendance_ui_state(driver), "checked_in"
-                )
+            self.assertEqual(
+                browser.peek_attendance_ui_state(driver), "not_checked_in"
+            )
+
+        with mock.patch(
+            "startofwork.browser.wait_for_attendance_url", return_value=True
+        ), mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": "08:30:06",
+                "out_time": None,
+                "check_in_present": True,
+                "check_out_present": True,
+                "check_in_enabled": False,
+                "check_out_enabled": True,
+            },
+        ):
+            self.assertEqual(
+                browser.peek_attendance_ui_state(driver), "checked_in"
+            )
+
+        with mock.patch(
+            "startofwork.browser.wait_for_attendance_url", return_value=True
+        ), mock.patch(
+            "startofwork.browser._read_attendance_snapshot",
+            return_value={
+                "in_time": "08:30:06",
+                "out_time": "08:39:32",
+                "check_in_present": True,
+                "check_out_present": True,
+                "check_in_enabled": False,
+                "check_out_enabled": False,
+            },
+        ):
+            self.assertEqual(
+                browser.peek_attendance_ui_state(driver), "checked_out"
+            )
+
+    def test_extract_labeled_clock_time(self) -> None:
+        from startofwork import browser
+
+        self.assertEqual(browser._extract_clock_time("08:39:32"), "08:39:32")
+        self.assertEqual(
+            browser._extract_clock_time("퇴근 시간\n08:39:32"), "08:39:32"
+        )
+        self.assertIsNone(browser._extract_clock_time("퇴근 시간"))
+        self.assertIsNone(browser._extract_clock_time(""))
+
+        box = "출근 시간 08:30:06 → 퇴근 시간 08:39:32"
+        self.assertEqual(
+            browser._extract_clock_time_after_label(box, "출근 시간"),
+            "08:30:06",
+        )
+        self.assertEqual(
+            browser._extract_clock_time_after_label(box, "퇴근 시간"),
+            "08:39:32",
+        )
+        self.assertIsNone(
+            browser._extract_clock_time_after_label("출근 시간 → 퇴근 시간", "퇴근 시간")
+        )
+
+        driver = mock.Mock()
+        time_el = mock.Mock()
+        time_el.is_displayed.return_value = True
+        time_el.text = "08:39:32"
+
+        def find_elements(by, xpath):
+            if "following-sibling::p" in xpath or "data" in xpath:
+                return [time_el]
+            return []
+
+        driver.find_elements.side_effect = find_elements
+        self.assertEqual(
+            browser._find_labeled_clock_time(driver, "퇴근 시간"), "08:39:32"
+        )
+
+        dash_el = mock.Mock()
+        dash_el.is_displayed.return_value = True
+        dash_el.text = "-"
+
+        def find_dash(by, xpath):
+            if "following-sibling::p" in xpath or "data" in xpath:
+                return [dash_el]
+            return []
+
+        driver.find_elements.side_effect = find_dash
+        self.assertIsNone(browser._find_labeled_clock_time(driver, "퇴근 시간"))
+
+
+    def test_handle_post_click_prompts_clicks_confirm(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+
+        with mock.patch(
+            "startofwork.browser._accept_native_alert", return_value=False
+        ), mock.patch(
+            "startofwork.browser._click_confirm_dialog_button",
+            side_effect=[True, False],
+        ) as click_confirm, mock.patch(
+            "startofwork.browser.time.sleep"
+        ), mock.patch(
+            "startofwork.browser.time.time",
+            side_effect=[0.0, 0.1, 0.5, 1.0],
+        ):
+            self.assertTrue(
+                browser._handle_post_click_prompts(driver, timeout_sec=2.0)
+            )
+            self.assertGreaterEqual(click_confirm.call_count, 1)
 
     def test_checkout_worker_syncs_when_already_checked_out(self) -> None:
         from startofwork import browser
@@ -1122,10 +1371,13 @@ class TestVerifyAndPeek(unittest.TestCase):
             "startofwork.browser.click_check_out_button"
         ) as click, mock.patch(
             "startofwork.browser.save_check_out_date"
-        ) as save:
+        ) as save, mock.patch(
+            "startofwork.browser.request_checkout_rearm"
+        ) as rearm:
             browser._auto_checkout_worker()
             click.assert_not_called()
             save.assert_not_called()
+            rearm.assert_called_once()
 
 
 class TestImportsSmoke(unittest.TestCase):
@@ -1152,8 +1404,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.2.15")
-        self.assertEqual(startofwork.__version__, "1.2.15")
+        self.assertEqual(constants.APP_VERSION, "1.2.16")
+        self.assertEqual(startofwork.__version__, "1.2.16")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

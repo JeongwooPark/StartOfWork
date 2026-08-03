@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from datetime import date
@@ -51,10 +52,12 @@ AttendanceUiState = Literal[
 
 VERIFY_WAIT_SEC = 15
 VERIFY_REFRESH_WAIT_SEC = 8
+CONFIRM_PROMPT_WAIT_SEC = 3.0
 
 _active_drivers: list[webdriver.Chrome] = []
 _attendance_lock = threading.Lock()
 _checkout_job_running = False
+_checkout_rearm_requested = False
 _cached_chrome: Optional[Path] = None
 _chrome_resolved = False
 
@@ -73,9 +76,46 @@ CHECK_OUT_BUTTON_XPATHS = (
 )
 ATTENDANCE_ACTION_XPATHS = CHECK_IN_BUTTON_XPATHS + CHECK_OUT_BUTTON_XPATHS
 
+# 출퇴근 클릭 직후 뜨는 확인 모달/레이어 (다우오피스 등)
+# 페이지 전역 '확인'은 오클릭 위험이 있어 dialog/modal 내부만 대상으로 한다.
+_DIALOG_ROOT = (
+    "*[@role='dialog' or contains(@class,'modal') or contains(@class,'dialog') "
+    "or contains(@class,'popup') or contains(@class,'layer') "
+    "or contains(@class,'message-box') or contains(@class,'confirm')]"
+)
+CONFIRM_BUTTON_XPATHS = (
+    f"//{_DIALOG_ROOT}//button[normalize-space(.)='확인' "
+    f"or .//span[normalize-space(.)='확인']]",
+    f"//{_DIALOG_ROOT}//button[normalize-space(.)='예' "
+    f"or .//span[normalize-space(.)='예']]",
+    f"//{_DIALOG_ROOT}//button[normalize-space(.)='OK' "
+    f"or normalize-space(.)='Yes']",
+    f"//{_DIALOG_ROOT}//*[@role='button'][normalize-space(.)='확인' "
+    f"or normalize-space(.)='예']",
+)
+
+# 성공 UI: 버튼은 회색으로 남고, 출근/퇴근 시간에 HH:MM:SS가 채워짐
+_TIME_TEXT_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):[0-5]\d:[0-5]\d(?!\d)")
+CHECK_IN_TIME_LABEL = "출근 시간"
+CHECK_OUT_TIME_LABEL = "퇴근 시간"
+
 
 def is_checkout_job_running() -> bool:
     return _checkout_job_running
+
+
+def request_checkout_rearm() -> None:
+    """자동 퇴근이 서버 미출근 등으로 스킵된 경우 GUI 재시도를 허용."""
+    global _checkout_rearm_requested
+    _checkout_rearm_requested = True
+
+
+def consume_checkout_rearm() -> bool:
+    global _checkout_rearm_requested
+    if not _checkout_rearm_requested:
+        return False
+    _checkout_rearm_requested = False
+    return True
 
 
 def find_chrome_executable() -> Optional[Path]:
@@ -178,6 +218,28 @@ def _resolve_button(element):
     return target
 
 
+def _is_effectively_enabled(element) -> bool:
+    """HTML disabled / aria-disabled / disabled 클래스를 함께 본다."""
+    try:
+        if not element.is_enabled():
+            return False
+    except Exception:
+        return False
+    try:
+        aria = (element.get_attribute("aria-disabled") or "").strip().lower()
+        if aria in ("true", "1"):
+            return False
+    except Exception:
+        pass
+    try:
+        cls = (element.get_attribute("class") or "").lower()
+        if "is-disabled" in cls or "disabled" in cls.split():
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def find_button_by_xpaths(
     driver: webdriver.Chrome,
     xpaths: tuple[str, ...],
@@ -193,7 +255,7 @@ def find_button_by_xpaths(
                     target = _resolve_button(element)
                     if not target.is_displayed():
                         continue
-                    if require_enabled and not target.is_enabled():
+                    if require_enabled and not _is_effectively_enabled(target):
                         continue
                     return target
                 except Exception:
@@ -235,16 +297,65 @@ def wait_for_attendance_url(
 
 
 def _click_element(driver: webdriver.Chrome, target) -> None:
-    time.sleep(0.5)
     driver.execute_script(
         "arguments[0].scrollIntoView({block: 'center'});",
         target,
     )
-    time.sleep(0.2)
+    time.sleep(0.15)
+    # SPA(Angular 등)에서는 JS click이 더 안정적인 경우가 많음
     try:
-        target.click()
-    except Exception:
         driver.execute_script("arguments[0].click();", target)
+    except Exception:
+        target.click()
+
+
+def _accept_native_alert(driver: webdriver.Chrome) -> bool:
+    try:
+        alert = driver.switch_to.alert
+        text = (alert.text or "").strip()
+        alert.accept()
+        logging.info("네이티브 확인창 수락: %s", text or "(empty)")
+        return True
+    except Exception:
+        return False
+
+
+def _click_confirm_dialog_button(driver: webdriver.Chrome) -> bool:
+    """출퇴근 클릭 후 뜨는 DOM 확인 모달의 확인/예 버튼을 클릭."""
+    button = find_button_by_xpaths(driver, CONFIRM_BUTTON_XPATHS)
+    if button is None:
+        return False
+    try:
+        label = (button.text or "").strip() or "확인"
+        _click_element(driver, button)
+        logging.info("확인 모달 버튼 클릭: %s", label)
+        return True
+    except Exception:
+        logging.exception("확인 모달 버튼 클릭 실패")
+        return False
+
+
+def _handle_post_click_prompts(
+    driver: webdriver.Chrome,
+    *,
+    timeout_sec: float = CONFIRM_PROMPT_WAIT_SEC,
+) -> bool:
+    """클릭 직후 native alert / 확인 모달을 짧은 시간 동안 처리."""
+    deadline = time.time() + timeout_sec
+    handled = False
+    while time.time() < deadline:
+        if _accept_native_alert(driver):
+            handled = True
+            time.sleep(0.3)
+            continue
+        if _click_confirm_dialog_button(driver):
+            handled = True
+            time.sleep(0.4)
+            continue
+        if handled:
+            break
+        time.sleep(0.2)
+    return handled
 
 
 def _click_labeled_button(
@@ -275,77 +386,258 @@ def _click_labeled_button(
     try:
         _click_element(driver, target)
         logging.info("%s 버튼 클릭 완료", label)
-        time.sleep(1.5)
+        if _handle_post_click_prompts(driver):
+            logging.info("%s 클릭 후 확인 팝업 처리 완료", label)
+        else:
+            time.sleep(0.5)
         return True
     except Exception:
         logging.exception("%s 버튼 클릭 실패", label)
         return False
 
 
-def peek_attendance_ui_state(driver: webdriver.Chrome) -> AttendanceUiState:
-    """활성 출근/퇴근 버튼 존재로 서버 UI 상태 판정 (클릭 없음)."""
-    if not wait_for_attendance_url(driver):
-        return "unknown"
+def _normalize_ui_text(value: object) -> str:
+    return " ".join(str(value or "").split())
 
-    check_in = find_button_by_xpaths(driver, CHECK_IN_BUTTON_XPATHS)
-    check_out = find_button_by_xpaths(driver, CHECK_OUT_BUTTON_XPATHS)
 
-    if check_in is not None and check_out is None:
-        return "not_checked_in"
-    if check_out is not None:
+def _extract_clock_time(text: str) -> Optional[str]:
+    match = _TIME_TEXT_RE.search(_normalize_ui_text(text))
+    return match.group(0) if match else None
+
+
+def _extract_clock_time_after_label(text: str, label: str) -> Optional[str]:
+    """라벨 뒤에 나온 첫 HH:MM:SS만 사용 (같은 박스의 다른 시각 오인 방지)."""
+    normalized = _normalize_ui_text(text)
+    if label not in normalized:
+        return None
+    after = normalized.split(label, 1)[1]
+    for other in (CHECK_IN_TIME_LABEL, CHECK_OUT_TIME_LABEL):
+        if other != label and other in after:
+            after = after.split(other, 1)[0]
+            break
+    return _extract_clock_time(after)
+
+
+def _find_labeled_clock_time(driver: webdriver.Chrome, label: str) -> Optional[str]:
+    """'출근 시간'/'퇴근 시간' 라벨 옆 p.data 의 HH:MM:SS를 읽는다."""
+    xpaths = (
+        (
+            f"//p[contains(@class,'tit') and normalize-space(.)='{label}']"
+            f"/following-sibling::p[contains(@class,'data')][1]"
+        ),
+        (
+            f"//*[contains(@class,'work_type')]"
+            f"[.//*[contains(@class,'tit') and normalize-space(.)='{label}']]"
+            f"//*[contains(@class,'data')][1]"
+        ),
+    )
+    for xpath in xpaths:
+        try:
+            for element in driver.find_elements(By.XPATH, xpath):
+                try:
+                    if not element.is_displayed():
+                        continue
+                    text = _normalize_ui_text(element.text)
+                    if not text or text in {"-", "–", "—"}:
+                        return None
+                    found = _extract_clock_time(text)
+                    if found:
+                        return found
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None
+
+
+def _read_clock_times(
+    driver: webdriver.Chrome,
+) -> tuple[Optional[str], Optional[str]]:
+    """근무시간 박스에서 출근/퇴근 시각을 한 번에 읽는다."""
+    in_time: Optional[str] = None
+    out_time: Optional[str] = None
+    found_in_label = False
+    found_out_label = False
+    try:
+        blocks = driver.find_elements(By.CSS_SELECTOR, "div.work_type")
+    except Exception:
+        blocks = []
+
+    for block in blocks:
+        try:
+            if not block.is_displayed():
+                continue
+            tit = block.find_element(By.CSS_SELECTOR, "p.tit, .tit")
+            data = block.find_element(By.CSS_SELECTOR, "p.data, .data")
+            label = _normalize_ui_text(tit.text)
+            raw = _normalize_ui_text(data.text)
+            value = None if (not raw or raw in {"-", "–", "—"}) else _extract_clock_time(raw)
+            if label == CHECK_IN_TIME_LABEL:
+                found_in_label = True
+                in_time = value
+            elif label == CHECK_OUT_TIME_LABEL:
+                found_out_label = True
+                out_time = value
+        except Exception:
+            continue
+
+    if not found_in_label:
+        in_time = _find_labeled_clock_time(driver, CHECK_IN_TIME_LABEL)
+    if not found_out_label:
+        out_time = _find_labeled_clock_time(driver, CHECK_OUT_TIME_LABEL)
+    return in_time, out_time
+
+
+def has_recorded_check_in_time(driver: webdriver.Chrome) -> bool:
+    return _read_clock_times(driver)[0] is not None
+
+
+def has_recorded_check_out_time(driver: webdriver.Chrome) -> bool:
+    return _read_clock_times(driver)[1] is not None
+
+
+def _read_attendance_snapshot(driver: webdriver.Chrome) -> dict:
+    """시각·버튼 상태를 한 번에 읽어 peek/verify가 공유한다."""
+    in_time, out_time = _read_clock_times(driver)
+    check_in = find_button_by_xpaths(
+        driver, CHECK_IN_BUTTON_XPATHS, require_enabled=False
+    )
+    check_out = find_button_by_xpaths(
+        driver, CHECK_OUT_BUTTON_XPATHS, require_enabled=False
+    )
+    check_in_enabled = bool(check_in is not None and _is_effectively_enabled(check_in))
+    check_out_enabled = bool(
+        check_out is not None and _is_effectively_enabled(check_out)
+    )
+    return {
+        "in_time": in_time,
+        "out_time": out_time,
+        "check_in_present": check_in is not None,
+        "check_out_present": check_out is not None,
+        "check_in_enabled": check_in_enabled,
+        "check_out_enabled": check_out_enabled,
+    }
+
+
+def _ui_state_from_snapshot(snap: dict) -> AttendanceUiState:
+    if snap.get("out_time"):
+        return "checked_out"
+    if snap.get("in_time"):
         return "checked_in"
-    if check_in is None and check_out is None:
-        # 둘 다 비활성/없음 — 이미 퇴근했을 가능성
-        disabled_out = find_button_by_xpaths(
-            driver, CHECK_OUT_BUTTON_XPATHS, require_enabled=False
-        )
-        disabled_in = find_button_by_xpaths(
-            driver, CHECK_IN_BUTTON_XPATHS, require_enabled=False
-        )
-        if disabled_out is not None and disabled_in is None:
+    if snap.get("check_in_enabled") and not snap.get("check_out_enabled"):
+        return "not_checked_in"
+    if snap.get("check_out_enabled"):
+        return "checked_in"
+    if snap.get("check_out_present") and not snap.get("check_out_enabled"):
+        if (not snap.get("check_in_present")) or (not snap.get("check_in_enabled")):
             return "checked_out"
-        if disabled_in is not None and (
-            disabled_out is None or not disabled_out.is_enabled()
-        ):
-            # 출근 버튼만 보이는데 비활성 → 모호
-            if disabled_out is not None and not disabled_out.is_enabled():
-                return "checked_out"
-        return "unknown"
     return "unknown"
 
 
+def peek_attendance_ui_state(driver: webdriver.Chrome) -> AttendanceUiState:
+    """서버 UI 상태 판정: 기록된 시각 우선, 없으면 활성 버튼으로 판정."""
+    if not wait_for_attendance_url(driver):
+        return "unknown"
+    return _ui_state_from_snapshot(_read_attendance_snapshot(driver))
+
+
 def _check_in_verified(driver: webdriver.Chrome) -> bool:
-    check_in = find_button_by_xpaths(driver, CHECK_IN_BUTTON_XPATHS)
-    check_out = find_button_by_xpaths(driver, CHECK_OUT_BUTTON_XPATHS)
-    return check_in is None or check_out is not None
+    snap = _read_attendance_snapshot(driver)
+    if snap.get("in_time") or snap.get("check_out_enabled"):
+        return True
+    return not snap.get("check_in_enabled")
 
 
 def _check_out_verified(driver: webdriver.Chrome) -> bool:
-    return find_button_by_xpaths(driver, CHECK_OUT_BUTTON_XPATHS) is None
+    """퇴근 시간이 채워졌거나, 활성 퇴근 버튼이 비활성으로 바뀐 경우 성공."""
+    snap = _read_attendance_snapshot(driver)
+    if snap.get("out_time"):
+        return True
+    if snap.get("check_out_enabled"):
+        return False
+    if snap.get("check_out_present") and not snap.get("check_out_enabled"):
+        return True
+    # 버튼이 아직 안 뜬 상태에서는 성공으로 보지 않음
+    if not snap.get("check_in_present") and not snap.get("check_out_present"):
+        return False
+    return not snap.get("check_in_enabled")
+
+
+def _log_attendance_debug(driver: webdriver.Chrome, label: str) -> None:
+    """검증 실패 시 버튼·토스트·기록 시각을 남겨 원인 추적을 돕는다."""
+    try:
+        snap = _read_attendance_snapshot(driver)
+        in_state = "none"
+        out_state = "none"
+        if snap.get("check_in_present"):
+            in_state = "enabled" if snap.get("check_in_enabled") else "disabled"
+        if snap.get("check_out_present"):
+            out_state = "enabled" if snap.get("check_out_enabled") else "disabled"
+
+        messages: list[str] = []
+        for xpath in (
+            "//*[@role='alert']",
+            "//*[contains(@class,'toast')]",
+            "//*[contains(@class,'snackbar')]",
+            "//*[contains(@class,'message')]",
+            f"//{_DIALOG_ROOT}",
+        ):
+            try:
+                for element in driver.find_elements(By.XPATH, xpath):
+                    try:
+                        if not element.is_displayed():
+                            continue
+                        text = _normalize_ui_text(element.text)
+                        if text and text not in messages:
+                            messages.append(text[:160])
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+            if len(messages) >= 5:
+                break
+
+        logging.warning(
+            "%s 검증 실패 진단 — check_in=%s check_out=%s "
+            "in_time=%s out_time=%s url=%s messages=%s",
+            label,
+            in_state,
+            out_state,
+            snap.get("in_time") or "-",
+            snap.get("out_time") or "-",
+            driver.current_url,
+            messages[:5] or "(none)",
+        )
+    except Exception:
+        logging.exception("%s 검증 실패 진단 로깅 중 오류", label)
 
 
 def _verify_after_click(
     driver: webdriver.Chrome,
     action: Literal["check_in", "check_out"],
 ) -> Literal["success", "failed", "unknown"]:
-    """클릭 후 DOM 검증 → refresh → 재확인."""
+    """클릭 후 DOM 검증. 실패 시에만 refresh 후 재확인."""
     predicate = (
         _check_in_verified if action == "check_in" else _check_out_verified
     )
     label = "출근" if action == "check_in" else "퇴근"
 
+    _handle_post_click_prompts(driver, timeout_sec=1.5)
+
     try:
         WebDriverWait(driver, VERIFY_WAIT_SEC).until(predicate)
+        logging.info("%s DOM 검증 성공", label)
+        return "success"
     except TimeoutException:
         logging.warning("%s DOM 검증 타임아웃 (refresh 전)", label)
-        # refresh 후에도 실패면 unknown/failed 판정
+        _log_attendance_debug(driver, f"{label}(refresh 전)")
     except WebDriverException:
         logging.exception("%s DOM 검증 중 WebDriver 오류", label)
         return "unknown"
 
     try:
         driver.refresh()
-        time.sleep(1.0)
+        time.sleep(0.8)
         if not wait_for_attendance_url(driver):
             return "unknown"
         WebDriverWait(driver, VERIFY_REFRESH_WAIT_SEC).until(predicate)
@@ -353,6 +645,7 @@ def _verify_after_click(
         return "success"
     except TimeoutException:
         logging.warning("%s DOM 검증 실패 (refresh 후)", label)
+        _log_attendance_debug(driver, f"{label}(refresh 후)")
         return "failed"
     except WebDriverException:
         logging.exception("%s refresh 검증 중 WebDriver 오류", label)
@@ -655,7 +948,8 @@ def _auto_checkout_worker(_chrome: Path | None = None) -> None:
             save_check_out_date(today)
             return
         if ui_state == "not_checked_in":
-            logging.info("서버 미출근 — 자동 퇴근 생략")
+            logging.info("서버 미출근 — 자동 퇴근 생략 (이후 재시도 허용)")
+            request_checkout_rearm()
             return
         if ui_state == "unknown":
             record_failure(

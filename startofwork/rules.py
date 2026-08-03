@@ -32,7 +32,7 @@ def should_open_browser(now: Optional[datetime] = None) -> tuple[bool, str]:
     if not (start <= current.time() <= end):
         return False, "활성 시간대 외"
 
-    reason = get_non_workday_reason(current.date())
+    reason = get_non_workday_reason(current.date(), cache_only=True)
     if reason is not None:
         return False, reason
 
@@ -44,7 +44,7 @@ def should_open_browser(now: Optional[datetime] = None) -> tuple[bool, str]:
 
 def should_attempt_check_in(today: Optional[date] = None) -> bool:
     day = today or date.today()
-    reason = get_non_workday_reason(day)
+    reason = get_non_workday_reason(day, cache_only=True)
     if reason is not None:
         logging.info("근무일 아님(%s) — 출근하기 생략", reason)
         return False
@@ -84,7 +84,7 @@ def should_attempt_check_out(
     if current.time() < checkout_time:
         return False
 
-    reason = get_non_workday_reason(day)
+    reason = get_non_workday_reason(day, cache_only=True)
     if reason is not None:
         logging.debug("근무일 아님(%s) — 퇴근하기 생략", reason)
         return False

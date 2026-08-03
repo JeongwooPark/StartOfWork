@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.15
+# 출근 근태 자동 실행 (StartOfWork) v1.2.16
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.15
+**버전:** 1.2.16
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -51,7 +51,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.15.exe`
+결과물: `dist\StartOfWorkSetup-1.2.16.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -71,7 +71,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.15.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.16.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -251,6 +251,15 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.16
+
+- 퇴근 성공 판정을 **퇴근 시간(HH:MM:SS)** 기준으로 수정 (버튼이 회색으로 남아도 정상 인식)
+- 출퇴근 클릭 후 확인 모달/네이티브 alert 처리, JS 클릭 우선
+- DOM 검증 1차 성공 시 refresh 생략 · 시각/버튼 스냅샷 통합으로 안정성·속도 개선
+- 공휴일 API `https` 전환, 실패 시 **오전 08:00 재시도** 예약 (새벽 점검 대응)
+- 서버 미출근 peek 시 자동 퇴근 당일 재시도 가능, rules는 캐시만 사용해 worker 블로킹 완화
+- 산출물: `StartOfWorkSetup-1.2.16.exe`, `StartOfWork-1.2.16.zip`
 
 ### v1.2.15
 
