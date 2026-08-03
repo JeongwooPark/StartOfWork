@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-UPDATE_USER_AGENT = "StartOfWorkUpdater/1.3.0"
+UPDATE_USER_AGENT = "StartOfWorkUpdater/1.3.1"
 ProgressCallback = Callable[[int, int], None]
 
 
