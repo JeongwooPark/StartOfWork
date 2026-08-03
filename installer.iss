@@ -3,7 +3,7 @@
 ; 또는: .\build.ps1 -Installer
 
 #define MyAppName "StartOfWork"
-#define MyAppVersion "1.2.16"
+#define MyAppVersion "1.2.17"
 #define MyAppPublisher "StartOfWork"
 #define MyAppExeName "StartOfWork.exe"
 
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=StartOfWorkSetup-1.2.16
+OutputBaseFilename=StartOfWorkSetup-1.2.17
 SetupIconFile=StartOfWork.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
@@ -104,6 +104,22 @@ begin
     FileCopy(UserStateBackup, ExpandConstant('{app}\check_in_state.json'), False);
   if (UserHolidayBackup <> '') and FileExists(UserHolidayBackup) then
     FileCopy(UserHolidayBackup, ExpandConstant('{app}\holiday_cache.json'), False);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  { Setup을 띄운 업데이터가 %LOCALAPPDATA%\StartOfWorkUpdater 를 잠그면 파일 교체가 실패한다.
+    /T 없이 업데이터만 종료해 자식 프로세스(Setup)는 유지한다. }
+  NeedsRestart := False;
+  Exec(
+    ExpandConstant('{cmd}'),
+    '/C taskkill /F /IM StartOfWorkUpdater.exe >NUL 2>&1',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode
+  );
+  Sleep(800);
+  Result := '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

@@ -298,7 +298,7 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
         self.assertEqual(release.version, "1.2.15")
         self.assertEqual(release.expected_sha256, "B" * 64)
 
-    def test_temp_bootstrap_only_for_legacy_app_path(self) -> None:
+    def test_temp_bootstrap_for_install_paths(self) -> None:
         from startofwork_updater.bootstrap import needs_temp_bootstrap
 
         legacy = Path(
@@ -307,8 +307,10 @@ class TestStandaloneUpdaterCli(unittest.TestCase):
         external = Path(
             r"C:\Users\x\AppData\Local\StartOfWorkUpdater\StartOfWorkUpdater.exe"
         )
+        from_temp = Path(r"C:\Users\x\AppData\Local\Temp\sow_upd_abc\StartOfWorkUpdater.exe")
         self.assertTrue(needs_temp_bootstrap(legacy))
-        self.assertFalse(needs_temp_bootstrap(external))
+        self.assertTrue(needs_temp_bootstrap(external))
+        self.assertFalse(needs_temp_bootstrap(from_temp))
 
 
 if __name__ == "__main__":

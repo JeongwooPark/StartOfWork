@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.16
+# 출근 근태 자동 실행 (StartOfWork) v1.2.17
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.16
+**버전:** 1.2.17
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -51,7 +51,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.16.exe`
+결과물: `dist\StartOfWorkSetup-1.2.17.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -71,7 +71,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.16.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.17.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -251,6 +251,14 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.2.17
+
+- 자동 업데이트 시 Setup이 실행 중인 업데이터 폴더(`StartOfWorkUpdater`)를 덮어쓰다 실패하던 문제 수정 (`exit=5`)
+  - 업데이터: 설치 경로에서 돌면 TEMP로 복사 후 재기동
+  - Setup: 설치 직전 업데이터만 종료(`/T` 없음 → Setup 유지)
+- **1.2.16**에서 업데이터가 실패했다면: 이 Setup을 **수동 설치**하거나, `StartOfWorkUpdater` 종료 후 PendingUpdate Setup 실행
+- 산출물: `StartOfWorkSetup-1.2.17.exe`, `StartOfWork-1.2.17.zip`
 
 ### v1.2.16
 

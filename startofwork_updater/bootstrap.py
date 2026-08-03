@@ -1,4 +1,8 @@
-"""설치 폴더 잠금 방지용 TEMP 재기동 (1.2.12+: 앱 밖 설치로 기본 불필요)."""
+"""설치 폴더 잠금 방지용 TEMP 재기동.
+
+Setup이 %LOCALAPPDATA%\\StartOfWorkUpdater(및 레거시 Updater)를 덮어쓰므로
+해당 경로에서 실행 중이면 TEMP로 복사한 뒤 재기동한다.
+"""
 
 from __future__ import annotations
 
@@ -30,12 +34,20 @@ def is_running_from_temp(exe: Path) -> bool:
 
 
 def needs_temp_bootstrap(exe: Path) -> bool:
-    """앱 설치 트리(StartOfWork\\Updater) 안에서만 TEMP 복사가 필요하다."""
+    """Setup이 덮어쓰는 경로에서 실행 중이면 TEMP 복사가 필요하다.
+
+    - 레거시: %LOCALAPPDATA%\\StartOfWork\\Updater
+    - 1.2.12+: %LOCALAPPDATA%\\StartOfWorkUpdater
+    """
+    if is_running_from_temp(exe):
+        return False
     try:
         parts = [p.lower() for p in exe.resolve().parts]
         for i in range(len(parts) - 1):
             if parts[i] == "startofwork" and parts[i + 1] == "updater":
                 return True
+        if "startofworkupdater" in parts:
+            return True
     except OSError:
         return False
     return False
@@ -64,7 +76,7 @@ def copy_bundle_to_temp(exe: Path) -> Path:
 
 
 def relaunch_from_temp(argv: list[str]) -> int:
-    """레거시(앱 안 Updater)만 TEMP 복사 재기동. 그 외는 -1."""
+    """설치 경로에서 돌면 TEMP 복사 후 재기동. 불필요하면 -1."""
     if not getattr(sys, "frozen", False):
         return -1
 

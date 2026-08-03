@@ -2,7 +2,7 @@
 
 from datetime import time as dt_time
 
-APP_VERSION = "1.2.16"
+APP_VERSION = "1.2.17"
 APP_TITLE = "출근 근태 자동 실행"
 # GitHub Releases 업데이트 (1.2.0+)
 GITHUB_REPO_OWNER = "JeongwooPark"
