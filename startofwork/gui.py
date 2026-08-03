@@ -13,7 +13,7 @@ from tkinter import ttk
 from typing import Optional
 
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 from startofwork.attendance_state import (
     get_check_in_status_text,
@@ -65,7 +65,7 @@ from startofwork.constants import (
 from startofwork.holidays import get_non_workday_reason, is_holiday_api_retry_due
 from startofwork.lock_state import get_windows_lock_state
 from startofwork.notifications import set_notification_handler
-from startofwork.paths import APP_ICON_FILE
+from startofwork.paths import APP_ICON_FILE, ICONS_DIR
 from startofwork.rules import is_within_active_hours, should_attempt_check_out, should_open_browser
 from startofwork.updater import (
     ReleaseInfo,
@@ -139,6 +139,227 @@ def next_poll_interval_ms(
 
     return CHECK_INTERVAL_QUIET_MS
 
+# ---------------------------------------------------------------------------
+# UI 색상·아이콘 (목업 스타일)
+# ---------------------------------------------------------------------------
+
+_UI_BG = "#F7F8FA"
+_CARD_BG = "#FFFFFF"
+_CARD_BORDER = "#E6E8EC"
+_GREEN = "#2E7D32"
+_GREEN_SOFT = "#E8F5E9"
+_GREEN_BORDER = "#B7D9C1"
+_GREEN_DARK = "#1B5E20"
+_RED = "#C62828"
+_RED_SOFT = "#FDECEC"
+_RED_BORDER = "#E9B8B8"
+_GRAY = "#78909C"
+_GRAY_SOFT = "#ECEFF1"
+_GRAY_BORDER = "#CFD8DC"
+_TEXT = "#37474F"
+_TEXT_MUTED = "#90A4AE"
+_FOOTER_BG = "#EEF0F3"
+_DASH = "#E5E7EB"
+
+_ICON_IMAGE_CACHE: dict[str, Image.Image] = {}
+
+
+def _pil_to_photo(image: Image.Image) -> ImageTk.PhotoImage:
+    return ImageTk.PhotoImage(image)
+
+
+def _load_icon_image(name: str) -> Image.Image:
+    """assets/icons/{name}.png 로드 (Bootstrap Icons 변환본)."""
+    cached = _ICON_IMAGE_CACHE.get(name)
+    if cached is not None:
+        return cached
+    path = ICONS_DIR / f"{name}.png"
+    if path.is_file():
+        image = Image.open(path).convert("RGBA")
+    else:
+        logging.warning("아이콘 없음: %s", path)
+        image = Image.new("RGBA", (18, 18), (0, 0, 0, 0))
+    _ICON_IMAGE_CACHE[name] = image
+    return image
+
+
+def _badge_icon_name(kind: str) -> str:
+    return {
+        "unlocked": "check-circle-fill",
+        "locked": "x-circle-fill",
+        "unknown": "question-circle-fill",
+    }.get(kind, "question-circle-fill")
+
+
+def _row_icon_name(kind: str, *, active: bool = True) -> str:
+    if kind == "calendar":
+        return "calendar2-check"
+    if kind == "holiday":
+        return "calendar-event"
+    if kind == "briefcase":
+        return "briefcase-fill" if active else "briefcase-fill-muted"
+    if kind == "logout":
+        return "box-arrow-right" if active else "box-arrow-right-muted"
+    if kind == "clock":
+        return "clock"
+    if kind == "power":
+        return "power"
+    if kind == "info":
+        return "info-circle-fill"
+    return kind
+
+
+def _rounded_rect_image(
+    width: int,
+    height: int,
+    radius: int,
+    fill: str,
+    outline: str,
+) -> Image.Image:
+    image = Image.new("RGBA", (max(width, 1), max(height, 1)), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (0, 0, width - 1, height - 1),
+        radius=max(1, radius),
+        fill=fill,
+        outline=outline,
+        width=1,
+    )
+    return image
+
+
+class RoundedPanel(tk.Frame):
+    """둥근 모서리 카드. body에 자식 위젯을 배치한다."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        radius: int = 14,
+        fill: str = _CARD_BG,
+        outline: str = _CARD_BORDER,
+        parent_bg: str = _UI_BG,
+        height: Optional[int] = None,
+    ) -> None:
+        super().__init__(master, background=parent_bg, height=height)
+        self._fixed_height = height is not None
+        if self._fixed_height:
+            self.pack_propagate(False)
+        self._radius = radius
+        self._fill = fill
+        self._outline = outline
+        self._parent_bg = parent_bg
+        self._bg_photo: Optional[ImageTk.PhotoImage] = None
+        self._pad = max(8, radius // 2)
+
+        self._bg_label = tk.Label(self, background=parent_bg, borderwidth=0)
+        self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+        self.body = tk.Frame(self, background=fill)
+        if self._fixed_height:
+            self.body.place(
+                x=self._pad,
+                y=self._pad,
+                relwidth=1,
+                relheight=1,
+                width=-2 * self._pad,
+                height=-2 * self._pad,
+            )
+        else:
+            self.body.pack(
+                fill="both",
+                expand=True,
+                padx=self._pad,
+                pady=self._pad,
+            )
+
+        self.bind("<Configure>", self._on_configure)
+
+    def set_colors(self, *, fill: str, outline: str) -> None:
+        self._fill = fill
+        self._outline = outline
+        self.body.configure(background=fill)
+        self._paint(self.winfo_width(), self.winfo_height())
+
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.widget is not self:
+            return
+        self._paint(event.width, event.height)
+
+    def _paint(self, width: int, height: int) -> None:
+        if width < 8 or height < 8:
+            return
+        image = _rounded_rect_image(
+            width, height, self._radius, self._fill, self._outline
+        )
+        photo = ImageTk.PhotoImage(image)
+        self._bg_photo = photo
+        self._bg_label.configure(image=photo)
+
+
+class ToggleSwitch(tk.Canvas):
+    """BooleanVar와 연동되는 토글 스위치."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        variable: tk.BooleanVar,
+        *,
+        command=None,
+        width: int = 44,
+        height: int = 24,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            highlightthickness=0,
+            borderwidth=0,
+            **kwargs,
+        )
+        self._variable = variable
+        self._command = command
+        self._width = width
+        self._height = height
+        self._pad = 2
+        self._knob_r = (height - 4) // 2
+        self.bind("<Button-1>", self._toggle)
+        self._trace_id = variable.trace_add("write", lambda *_: self._redraw())
+        self._redraw()
+
+    def destroy(self) -> None:
+        try:
+            self._variable.trace_remove("write", self._trace_id)
+        except (tk.TclError, AttributeError):
+            pass
+        super().destroy()
+
+    def _toggle(self, _event=None) -> None:
+        self._variable.set(not bool(self._variable.get()))
+        if self._command is not None:
+            self._command()
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        on = bool(self._variable.get())
+        w, h = self._width, self._height
+        bg = _GREEN if on else "#CFD8DC"
+        self.create_oval(0, 0, h, h, fill=bg, outline=bg)
+        self.create_oval(w - h, 0, w, h, fill=bg, outline=bg)
+        self.create_rectangle(h // 2, 0, w - h // 2, h, fill=bg, outline=bg)
+        cx = (w - self._knob_r - self._pad) if on else (self._knob_r + self._pad)
+        cy = h // 2
+        self.create_oval(
+            cx - self._knob_r,
+            cy - self._knob_r,
+            cx + self._knob_r,
+            cy + self._knob_r,
+            fill="#FFFFFF",
+            outline="#FFFFFF",
+        )
+
+
 def create_tray_image() -> Image.Image:
     """앱 아이콘(.ico)을 트레이용 이미지로 로드"""
     try:
@@ -179,9 +400,10 @@ class LockStateMonitor(tk.Tk):
         super().__init__()
 
         self.title(APP_TITLE)
-        self.geometry("520x400")
-        self.minsize(500, 360)
+        self.geometry("560x520")
+        self.minsize(540, 480)
         self.resizable(True, True)
+        self.configure(background=_UI_BG)
         self._apply_window_icon()
 
         self.current_state: Optional[bool] = None
@@ -190,7 +412,8 @@ class LockStateMonitor(tk.Tk):
         self._tray_icon: Optional[pystray.Icon] = None
         self._tray_thread: Optional[threading.Thread] = None
         self._hiding_to_tray = False
-        self._normal_geometry = "520x400"
+        self._normal_geometry = "560x520"
+        self._ui_images: list[ImageTk.PhotoImage] = []
         self._restoring_from_maximize = False
         self._holiday_info_date: Optional[date] = None
         self._holiday_info_text = "확인 중"
@@ -622,148 +845,366 @@ class LockStateMonitor(tk.Tk):
         except tk.TclError:
             pass
 
+        style.configure("App.TFrame", background=_UI_BG)
+        style.configure("Card.TFrame", background=_CARD_BG)
         style.configure("Title.TLabel", font=("맑은 고딕", 16, "bold"))
-        style.configure("Caption.TLabel", font=("맑은 고딕", 10))
-        style.configure("Info.TLabel", font=("맑은 고딕", 11))
-        style.configure("Info.TCheckbutton", font=("맑은 고딕", 11))
-
-    def _build_ui(self) -> None:
-        outer = ttk.Frame(self, padding=(22, 14, 22, 14))
-        outer.pack(fill="x", expand=False)
-
-        self.state_frame = tk.Frame(
-            outer,
-            background="#ECEFF1",
-            highlightthickness=1,
-            highlightbackground="#CFD8DC",
-            height=64,
+        style.configure(
+            "Caption.TLabel",
+            font=("맑은 고딕", 9),
+            foreground=_TEXT_MUTED,
+            background=_UI_BG,
         )
-        self.state_frame.pack(fill="x", padx=28, pady=(0, 10))
-        self.state_frame.pack_propagate(False)
+        style.configure(
+            "Info.TLabel",
+            font=("맑은 고딕", 11),
+            foreground=_TEXT,
+            background=_CARD_BG,
+        )
+        style.configure(
+            "CardValue.TLabel",
+            font=("맑은 고딕", 11),
+            foreground=_TEXT,
+            background=_CARD_BG,
+        )
+        style.configure(
+            "CardValueDone.TLabel",
+            font=("맑은 고딕", 11, "bold"),
+            foreground=_GREEN,
+            background=_CARD_BG,
+        )
+        style.configure(
+            "CardValuePending.TLabel",
+            font=("맑은 고딕", 11),
+            foreground=_TEXT_MUTED,
+            background=_CARD_BG,
+        )
+        style.configure(
+            "Footer.TLabel",
+            font=("맑은 고딕", 9),
+            foreground=_TEXT_MUTED,
+            background=_FOOTER_BG,
+        )
+        style.configure(
+            "Time.TSpinbox",
+            font=("맑은 고딕", 10),
+            arrowsize=12,
+        )
 
-        self.state_label = tk.Label(
-            self.state_frame,
-            text="확인 중",
-            font=("맑은 고딕", 22, "bold"),
-            foreground="#455A64",
-            background="#ECEFF1",
-            anchor="center",
+    def _keep_image(self, image: Image.Image) -> ImageTk.PhotoImage:
+        photo = _pil_to_photo(image)
+        self._ui_images.append(photo)
+        return photo
+
+    def _icon_photo(self, name: str) -> ImageTk.PhotoImage:
+        return self._keep_image(_load_icon_image(name))
+
+    def _make_card(self, parent: tk.Misc, *, radius: int = 14) -> RoundedPanel:
+        return RoundedPanel(
+            parent,
+            radius=radius,
+            fill=_CARD_BG,
+            outline=_CARD_BORDER,
+            parent_bg=_UI_BG,
+        )
+
+    def _add_dashed_separator(self, parent: tk.Misc) -> None:
+        sep = tk.Canvas(
+            parent,
+            height=1,
+            background=_CARD_BG,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        sep.pack(fill="x", padx=14, pady=0)
+
+        def _draw(event: tk.Event, canvas: tk.Canvas = sep) -> None:
+            canvas.delete("all")
+            canvas.create_line(0, 0, event.width, 0, fill=_DASH, dash=(3, 3))
+
+        sep.bind("<Configure>", _draw)
+
+    def _status_row(
+        self,
+        parent: tk.Misc,
+        *,
+        icon_kind: str,
+        label: str,
+        value_style: str,
+        initial: str = "-",
+        icon_active: bool = True,
+    ) -> tuple[tk.Label, ttk.Label]:
+        """한 행에 아이콘·라벨·값을 같은 부모(row)에 배치해 정렬을 맞춘다."""
+        row = tk.Frame(parent, background=_CARD_BG)
+        row.pack(fill="x", padx=14, pady=10)
+        row.columnconfigure(1, weight=1)
+
+        icon = tk.Label(
+            row,
+            image=self._icon_photo(_row_icon_name(icon_kind, active=icon_active)),
+            background=_CARD_BG,
+        )
+        icon.grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        tk.Label(
+            row,
+            text=label,
+            font=("맑은 고딕", 11),
+            foreground=_TEXT,
+            background=_CARD_BG,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="w")
+
+        value = ttk.Label(row, text=initial, style=value_style)
+        value.grid(row=0, column=2, sticky="e")
+        return icon, value
+
+    def _time_spin(
+        self,
+        parent: tk.Misc,
+        variable: tk.StringVar,
+        *,
+        to: int,
+        command,
+    ) -> ttk.Spinbox:
+        spin = ttk.Spinbox(
+            parent,
+            from_=0,
+            to=to,
+            width=3,
+            textvariable=variable,
+            format="%02.0f",
+            command=command,
+            style="Time.TSpinbox",
             justify="center",
         )
-        self.state_label.place(relx=0.5, rely=0.5, anchor="center")
+        return spin
 
-        details = ttk.Frame(outer)
-        details.pack(fill="x", padx=30, pady=(0, 4))
+    def _build_ui(self) -> None:
+        outer = tk.Frame(self, background=_UI_BG)
+        outer.pack(fill="both", expand=True)
+        content = tk.Frame(outer, background=_UI_BG)
+        content.pack(fill="x", expand=False, padx=18, pady=16)
 
-        ttk.Label(
-            details,
-            text="마지막 상태 변경",
-            style="Info.TLabel",
-        ).grid(row=0, column=0, sticky="w", pady=5)
+        # --- 상태 배너 ---
+        self._badge_unlocked = self._icon_photo(_badge_icon_name("unlocked"))
+        self._badge_locked = self._icon_photo(_badge_icon_name("locked"))
+        self._badge_unknown = self._icon_photo(_badge_icon_name("unknown"))
+        self._watermark_img = self._icon_photo("shield-lock-fill-watermark")
 
-        self.changed_label = ttk.Label(
-            details,
-            text="-",
-            style="Info.TLabel",
+        self.state_frame = RoundedPanel(
+            content,
+            radius=16,
+            fill=_GRAY_SOFT,
+            outline=_GRAY_BORDER,
+            parent_bg=_UI_BG,
+            height=92,
         )
-        self.changed_label.grid(row=0, column=1, sticky="e", pady=5)
+        self.state_frame.pack(fill="x", pady=(0, 12))
 
-        ttk.Label(
-            details,
-            text="공휴일 유무",
-            style="Info.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=5)
+        self._banner_inner = self.state_frame.body
+        self._banner_text_col = tk.Frame(self._banner_inner, background=_GRAY_SOFT)
 
-        self.holiday_label = ttk.Label(
-            details,
+        self.state_badge_label = tk.Label(
+            self._banner_inner,
+            image=self._badge_unknown,
+            background=_GRAY_SOFT,
+        )
+        self.state_badge_label.pack(side="left", padx=(8, 14), pady=8)
+
+        self._banner_text_col.pack(side="left", fill="both", expand=True, pady=8)
+
+        self.state_label = tk.Label(
+            self._banner_text_col,
             text="확인 중",
-            style="Info.TLabel",
+            font=("맑은 고딕", 18, "bold"),
+            foreground=_GRAY,
+            background=_GRAY_SOFT,
+            anchor="w",
+            justify="left",
         )
-        self.holiday_label.grid(row=1, column=1, sticky="e", pady=5)
+        self.state_label.pack(anchor="w")
 
-        ttk.Label(
-            details,
-            text="출근체크",
-            style="Info.TLabel",
-        ).grid(row=2, column=0, sticky="w", pady=5)
-
-        self.check_in_label = ttk.Label(
-            details,
-            text="확인 중",
-            style="Info.TLabel",
+        self.message_label = tk.Label(
+            self._banner_text_col,
+            text="상태를 확인하는 중…",
+            font=("맑은 고딕", 10),
+            foreground=_GREEN_DARK,
+            background=_GRAY_SOFT,
+            anchor="w",
+            justify="left",
         )
-        self.check_in_label.grid(row=2, column=1, sticky="e", pady=5)
+        self.message_label.pack(anchor="w", pady=(2, 0))
 
-        ttk.Label(
-            details,
-            text="퇴근체크",
-            style="Info.TLabel",
-        ).grid(row=3, column=0, sticky="w", pady=5)
-
-        self.check_out_label = ttk.Label(
-            details,
-            text="확인 중",
-            style="Info.TLabel",
+        self.state_watermark = tk.Label(
+            self._banner_inner,
+            image=self._watermark_img,
+            background=_GRAY_SOFT,
         )
-        self.check_out_label.grid(row=3, column=1, sticky="e", pady=5)
+        self.state_watermark.pack(side="right", padx=(8, 12), pady=4)
 
-        details.columnconfigure(1, weight=1)
+        # --- 상태 카드 ---
+        status_panel = self._make_card(content)
+        status_panel.pack(fill="x", pady=(0, 12))
+        status_card = status_panel.body
 
-        hours_frame = ttk.Frame(outer)
-        hours_frame.pack(fill="x", padx=30, pady=(8, 0))
-
-        ttk.Label(hours_frame, text="업무시간", style="Info.TLabel").grid(
-            row=0, column=0, sticky="w"
+        self._changed_icon, self.changed_label = self._status_row(
+            status_card,
+            icon_kind="calendar",
+            label="마지막 상태 변경",
+            value_style="CardValue.TLabel",
+            initial="-",
         )
-        hours_box = ttk.Frame(hours_frame)
-        hours_box.grid(row=0, column=1, sticky="e")
+        self._add_dashed_separator(status_card)
 
-        self.active_start_hour_spin = ttk.Spinbox(
+        self._holiday_icon, self.holiday_label = self._status_row(
+            status_card,
+            icon_kind="holiday",
+            label="공휴일 유무",
+            value_style="CardValue.TLabel",
+            initial="확인 중",
+        )
+        self._add_dashed_separator(status_card)
+
+        self._check_in_icon, self.check_in_label = self._status_row(
+            status_card,
+            icon_kind="briefcase",
+            label="출근체크",
+            value_style="CardValuePending.TLabel",
+            initial="확인 중",
+        )
+        self._add_dashed_separator(status_card)
+
+        self._check_out_icon, self.check_out_label = self._status_row(
+            status_card,
+            icon_kind="logout",
+            label="퇴근체크",
+            value_style="CardValuePending.TLabel",
+            initial="확인 중",
+            icon_active=False,
+        )
+
+        # --- 설정 카드 ---
+        settings_panel = self._make_card(content)
+        settings_panel.pack(fill="x", pady=(0, 12))
+        settings_card = settings_panel.body
+
+        hours_row = tk.Frame(settings_card, background=_CARD_BG)
+        hours_row.pack(fill="x", padx=14, pady=12)
+        hours_row.columnconfigure(1, weight=1)
+        tk.Label(
+            hours_row,
+            image=self._icon_photo("clock"),
+            background=_CARD_BG,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        tk.Label(
+            hours_row,
+            text="업무시간",
+            font=("맑은 고딕", 11),
+            foreground=_TEXT,
+            background=_CARD_BG,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="w")
+
+        hours_box = tk.Frame(hours_row, background=_CARD_BG)
+        hours_box.grid(row=0, column=2, sticky="e")
+
+        self.active_start_hour_spin = self._time_spin(
             hours_box,
-            from_=0,
+            self.active_start_hour_var,
             to=23,
-            width=3,
-            textvariable=self.active_start_hour_var,
-            format="%02.0f",
             command=self._on_active_hours_changed,
         )
         self.active_start_hour_spin.pack(side="left")
-        ttk.Label(hours_box, text=":", style="Info.TLabel").pack(side="left", padx=2)
-        self.active_start_minute_spin = ttk.Spinbox(
+        tk.Label(
+            hours_box, text=":", font=("맑은 고딕", 11), background=_CARD_BG, foreground=_TEXT
+        ).pack(side="left", padx=2)
+        self.active_start_minute_spin = self._time_spin(
             hours_box,
-            from_=0,
+            self.active_start_minute_var,
             to=59,
-            width=3,
-            textvariable=self.active_start_minute_var,
-            format="%02.0f",
             command=self._on_active_hours_changed,
         )
         self.active_start_minute_spin.pack(side="left")
-        ttk.Label(hours_box, text="~", style="Info.TLabel").pack(
-            side="left", padx=(6, 6)
-        )
-        self.active_end_hour_spin = ttk.Spinbox(
+        tk.Label(
             hours_box,
-            from_=0,
+            text="~",
+            font=("맑은 고딕", 11),
+            background=_CARD_BG,
+            foreground=_TEXT_MUTED,
+        ).pack(side="left", padx=(8, 8))
+        self.active_end_hour_spin = self._time_spin(
+            hours_box,
+            self.active_end_hour_var,
             to=23,
-            width=3,
-            textvariable=self.active_end_hour_var,
-            format="%02.0f",
             command=self._on_active_hours_changed,
         )
         self.active_end_hour_spin.pack(side="left")
-        ttk.Label(hours_box, text=":", style="Info.TLabel").pack(side="left", padx=2)
-        self.active_end_minute_spin = ttk.Spinbox(
+        tk.Label(
+            hours_box, text=":", font=("맑은 고딕", 11), background=_CARD_BG, foreground=_TEXT
+        ).pack(side="left", padx=2)
+        self.active_end_minute_spin = self._time_spin(
             hours_box,
-            from_=0,
+            self.active_end_minute_var,
             to=59,
-            width=3,
-            textvariable=self.active_end_minute_var,
-            format="%02.0f",
             command=self._on_active_hours_changed,
         )
         self.active_end_minute_spin.pack(side="left")
-        hours_frame.columnconfigure(0, weight=1)
+
+        self._add_dashed_separator(settings_card)
+
+        checkout_row = tk.Frame(settings_card, background=_CARD_BG)
+        checkout_row.pack(fill="x", padx=14, pady=12)
+        checkout_row.columnconfigure(3, weight=1)
+        tk.Label(
+            checkout_row,
+            image=self._icon_photo("power"),
+            background=_CARD_BG,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+        self.auto_checkout_toggle = ToggleSwitch(
+            checkout_row,
+            self.auto_checkout_enabled,
+            command=self._on_auto_checkout_settings_changed,
+            background=_CARD_BG,
+        )
+        self.auto_checkout_toggle.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.auto_checkout_check = self.auto_checkout_toggle
+
+        tk.Label(
+            checkout_row,
+            text="자동 퇴근 활성화",
+            font=("맑은 고딕", 11),
+            foreground=_TEXT,
+            background=_CARD_BG,
+            anchor="w",
+        ).grid(row=0, column=2, sticky="w")
+
+        time_box = tk.Frame(checkout_row, background=_CARD_BG)
+        time_box.grid(row=0, column=4, sticky="e")
+        tk.Label(
+            time_box,
+            text="퇴근 시각",
+            font=("맑은 고딕", 11),
+            foreground=_TEXT,
+            background=_CARD_BG,
+        ).pack(side="left", padx=(0, 8))
+        self.checkout_hour_spin = self._time_spin(
+            time_box,
+            self.checkout_hour_var,
+            to=23,
+            command=self._on_auto_checkout_settings_changed,
+        )
+        self.checkout_hour_spin.pack(side="left")
+        tk.Label(
+            time_box, text=":", font=("맑은 고딕", 11), background=_CARD_BG, foreground=_TEXT
+        ).pack(side="left", padx=2)
+        self.checkout_minute_spin = self._time_spin(
+            time_box,
+            self.checkout_minute_var,
+            to=59,
+            command=self._on_auto_checkout_settings_changed,
+        )
+        self.checkout_minute_spin.pack(side="left")
 
         self._active_hours_save_after_id: Optional[str] = None
         self._suppress_active_hours_save = False
@@ -784,49 +1225,6 @@ class LockStateMonitor(tk.Tk):
         ):
             var.trace_add("write", lambda *_: self._schedule_active_hours_save())
 
-        checkout_frame = ttk.Frame(outer)
-        checkout_frame.pack(fill="x", padx=30, pady=(8, 0))
-
-        self.auto_checkout_check = ttk.Checkbutton(
-            checkout_frame,
-            text="자동 퇴근 활성화",
-            variable=self.auto_checkout_enabled,
-            command=self._on_auto_checkout_settings_changed,
-            style="Info.TCheckbutton",
-        )
-        self.auto_checkout_check.grid(row=0, column=0, sticky="w")
-
-        time_box = ttk.Frame(checkout_frame)
-        time_box.grid(row=0, column=1, sticky="e")
-
-        ttk.Label(time_box, text="퇴근 시각", style="Info.TLabel").pack(
-            side="left", padx=(0, 6)
-        )
-        self.checkout_hour_spin = ttk.Spinbox(
-            time_box,
-            from_=0,
-            to=23,
-            width=3,
-            textvariable=self.checkout_hour_var,
-            format="%02.0f",
-            command=self._on_auto_checkout_settings_changed,
-        )
-        self.checkout_hour_spin.pack(side="left")
-        ttk.Label(time_box, text=":", style="Info.TLabel").pack(side="left", padx=2)
-        self.checkout_minute_spin = ttk.Spinbox(
-            time_box,
-            from_=0,
-            to=59,
-            width=3,
-            textvariable=self.checkout_minute_var,
-            format="%02.0f",
-            command=self._on_auto_checkout_settings_changed,
-        )
-        self.checkout_minute_spin.pack(side="left")
-
-        checkout_frame.columnconfigure(0, weight=1)
-        checkout_frame.columnconfigure(1, weight=0)
-
         self.checkout_hour_spin.bind(
             "<FocusOut>", lambda _e: self._on_auto_checkout_settings_changed()
         )
@@ -840,20 +1238,36 @@ class LockStateMonitor(tk.Tk):
             "write", lambda *_: self._schedule_checkout_settings_save()
         )
 
-        start, end = load_active_hours()
-        self.message_label = ttk.Label(
-            outer,
-            text=(
-                f"{start.strftime('%H:%M')}~{end.strftime('%H:%M')} "
-                "시작·업무시간 시작·잠금 해제 시 출근을 시도합니다"
-            ),
-            style="Caption.TLabel",
+        # --- 하단 안내 ---
+        footer_panel = RoundedPanel(
+            content,
+            radius=12,
+            fill=_FOOTER_BG,
+            outline=_FOOTER_BG,
+            parent_bg=_UI_BG,
+            height=40,
         )
-        self.message_label.pack(anchor="center", pady=(8, 0))
+        footer_panel.pack(fill="x", pady=(4, 0))
+        footer_inner = footer_panel.body
+        tk.Label(
+            footer_inner,
+            image=self._icon_photo("info-circle-fill"),
+            background=_FOOTER_BG,
+        ).pack(side="left", padx=(8, 8), pady=6)
+        self.footer_label = tk.Label(
+            footer_inner,
+            text="활성 시간대 — 시작·업무시간 시작·잠금 해제 시 출근 시도",
+            font=("맑은 고딕", 9),
+            foreground=_TEXT_MUTED,
+            background=_FOOTER_BG,
+            anchor="w",
+            justify="left",
+        )
+        self.footer_label.pack(side="left", fill="x", expand=True, pady=6, padx=(0, 8))
 
         self.update_idletasks()
-        fit_w = max(self.winfo_reqwidth(), 500)
-        fit_h = max(self.winfo_reqheight(), 320)
+        fit_w = max(self.winfo_reqwidth(), 540)
+        fit_h = max(self.winfo_reqheight(), 1)
         self.geometry(f"{fit_w}x{fit_h}")
         self.minsize(fit_w, fit_h)
         self._normal_geometry = f"{fit_w}x{fit_h}"
@@ -942,12 +1356,64 @@ class LockStateMonitor(tk.Tk):
         )
         save_active_hours(start, end)
         if self._is_ui_visible():
-            self.message_label.configure(
-                text=(
-                    f"{start.strftime('%H:%M')}~{end.strftime('%H:%M')} "
-                    "시작·업무시간 시작·잠금 해제 시 출근을 시도합니다"
-                )
+            self._update_footer_hint(within_hours=is_within_active_hours())
+
+    def _default_banner_subtitle(self, state: Optional[bool]) -> str:
+        if state is True:
+            return "잠금 해제 대기 중"
+        if state is False:
+            if self._check_in_status_text.startswith("완료"):
+                return "출근 체크가 완료되었습니다!"
+            if self._check_out_status_text.startswith("완료"):
+                return "퇴근 체크가 완료되었습니다!"
+            if self._check_in_status_text.startswith("미완료"):
+                return "출근 체크를 대기 중입니다"
+            return "상태를 확인하는 중…"
+        return "상태 조회 실패 — 로그 파일 확인 필요"
+
+    def _update_footer_hint(self, *, within_hours: bool) -> None:
+        start, end = self._get_selected_active_hours()
+        if within_hours:
+            text = "활성 시간대 — 시작·업무시간 시작·잠금 해제 시 출근 시도"
+        else:
+            text = (
+                f"활성 시간대 외 ({start.strftime('%H:%M')}~{end.strftime('%H:%M')}) "
+                "— 업무시간 시작 시 출근 대기"
             )
+        try:
+            self.footer_label.configure(text=text)
+        except tk.TclError:
+            pass
+
+    def _attendance_value_style(self, status: str) -> str:
+        if status.startswith("완료"):
+            return "CardValueDone.TLabel"
+        return "CardValuePending.TLabel"
+
+    def _set_row_icon(
+        self,
+        icon_label: tk.Label,
+        kind: str,
+        *,
+        active: bool,
+    ) -> None:
+        key = f"{kind}:{int(active)}:{id(icon_label)}"
+        if not hasattr(self, "_row_icon_photos"):
+            self._row_icon_photos: dict[str, ImageTk.PhotoImage] = {}
+        photo = _pil_to_photo(_load_icon_image(_row_icon_name(kind, active=active)))
+        self._row_icon_photos[key] = photo
+        icon_label.configure(image=photo)
+
+    def _refresh_banner_subtitle_if_idle(self) -> None:
+        """출퇴근 상태 문구가 바뀌면 배너 부제를 기본 안내로 맞춤."""
+        if not self._is_ui_visible():
+            return
+        try:
+            self.message_label.configure(
+                text=self._default_banner_subtitle(self._last_ui_lock_state)
+            )
+        except tk.TclError:
+            pass
 
     def _schedule_checkout_settings_save(self) -> None:
         if self._suppress_checkout_save:
@@ -1021,7 +1487,16 @@ class LockStateMonitor(tk.Tk):
             return
         self._check_in_status_text = status
         if self._is_ui_visible():
-            self.check_in_label.configure(text=status)
+            self.check_in_label.configure(
+                text=status,
+                style=self._attendance_value_style(status),
+            )
+            self._set_row_icon(
+                self._check_in_icon,
+                "briefcase",
+                active=status.startswith("완료"),
+            )
+            self._refresh_banner_subtitle_if_idle()
         self._refresh_attendance_summary()
 
     def _apply_check_out_status(self, status: str) -> None:
@@ -1029,7 +1504,16 @@ class LockStateMonitor(tk.Tk):
             return
         self._check_out_status_text = status
         if self._is_ui_visible():
-            self.check_out_label.configure(text=status)
+            self.check_out_label.configure(
+                text=status,
+                style=self._attendance_value_style(status),
+            )
+            self._set_row_icon(
+                self._check_out_icon,
+                "logout",
+                active=status.startswith("완료"),
+            )
+            self._refresh_banner_subtitle_if_idle()
         self._refresh_attendance_summary()
 
     def _refresh_attendance_summary(self, today: Optional[date] = None) -> None:
@@ -1423,38 +1907,56 @@ class LockStateMonitor(tk.Tk):
 
         if state is True:
             text = "잠금 상태"
-            foreground = "#9B2C2C"
-            background = "#FDECEC"
-            border = "#E9B8B8"
-            message = "잠금 해제 대기 중"
+            foreground = _RED
+            background = _RED_SOFT
+            border = _RED_BORDER
+            badge = self._badge_locked
+            subtitle_fg = "#8B3A3A"
 
         elif state is False:
             text = "잠금 해제"
-            foreground = "#216E39"
-            background = "#EAF6EE"
-            border = "#B7D9C1"
-            if within_hours:
-                message = "활성 시간대 — 시작·업무시간 시작·잠금 해제 시 출근 시도"
-            else:
-                message = "활성 시간대 외 — 업무시간 시작 시 출근 대기"
+            foreground = _GREEN
+            background = _GREEN_SOFT
+            border = _GREEN_BORDER
+            badge = self._badge_unlocked
+            subtitle_fg = _GREEN_DARK
 
         else:
             text = "확인 불가"
-            foreground = "#455A64"
-            background = "#ECEFF1"
-            border = "#CFD8DC"
-            message = "상태 조회 실패 — 로그 파일 확인 필요"
+            foreground = _GRAY
+            background = _GRAY_SOFT
+            border = _GRAY_BORDER
+            badge = self._badge_unknown
+            subtitle_fg = _GRAY
 
-        self.state_frame.configure(
-            background=background,
-            highlightbackground=border,
-        )
+        subtitle = self._default_banner_subtitle(state)
+
+        self.state_frame.set_colors(fill=background, outline=border)
+        for widget in (
+            self._banner_inner,
+            self._banner_text_col,
+            self.state_badge_label,
+            self.state_label,
+            self.message_label,
+            self.state_watermark,
+        ):
+            try:
+                widget.configure(background=background)
+            except tk.TclError:
+                pass
+
+        self.state_badge_label.configure(image=badge)
         self.state_label.configure(
             text=text,
             foreground=foreground,
             background=background,
         )
-        self.message_label.configure(text=message)
+        self.message_label.configure(
+            text=subtitle,
+            foreground=subtitle_fg,
+            background=background,
+        )
+        self._update_footer_hint(within_hours=bool(within_hours))
 
     def _trigger_check_in_if_allowed(
         self,
@@ -1624,8 +2126,24 @@ class LockStateMonitor(tk.Tk):
     def _sync_visible_ui(self, now: datetime) -> None:
         """트레이 복원 등 창이 보일 때 라벨을 현재 캐시·상태로 맞춤."""
         self.holiday_label.configure(text=self._holiday_info_text)
-        self.check_in_label.configure(text=self._check_in_status_text)
-        self.check_out_label.configure(text=self._check_out_status_text)
+        self.check_in_label.configure(
+            text=self._check_in_status_text,
+            style=self._attendance_value_style(self._check_in_status_text),
+        )
+        self.check_out_label.configure(
+            text=self._check_out_status_text,
+            style=self._attendance_value_style(self._check_out_status_text),
+        )
+        self._set_row_icon(
+            self._check_in_icon,
+            "briefcase",
+            active=self._check_in_status_text.startswith("완료"),
+        )
+        self._set_row_icon(
+            self._check_out_icon,
+            "logout",
+            active=self._check_out_status_text.startswith("완료"),
+        )
         self._apply_window_title()
         self._apply_last_changed_label()
         self._set_state_display(

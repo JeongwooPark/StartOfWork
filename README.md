@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.2.17
+# 출근 근태 자동 실행 (StartOfWork) v1.3.0
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.2.17
+**버전:** 1.3.0
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -16,7 +16,8 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 > **1.2.12부터** 업데이터를 `%LOCALAPPDATA%\StartOfWorkUpdater`에 분리 설치해 TEMP 복사·용량을 줄입니다.  
 > **1.2.13부터** 업데이터는 `startofwork`(GUI/pystray)를 import하지 않습니다.  
 > **1.2.14부터** 비밀번호는 Windows Credential Manager에 저장하고, 출퇴근은 DOM/서버 검증 후에만 기록합니다.  
-> **1.2.15부터** Setup은 앱을 강제 종료 대기하지 않으며(`CloseApplications=no`), 자동 업데이트는 `/NOCLOSEAPPLICATIONS`로 실행합니다.
+> **1.2.15부터** Setup은 앱을 강제 종료 대기하지 않으며(`CloseApplications=no`), 자동 업데이트는 `/NOCLOSEAPPLICATIONS`로 실행합니다.  
+> **1.3.0부터** 메인 GUI를 카드형 라운드 레이아웃·Bootstrap Icons로 개편했습니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -51,7 +52,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.2.17.exe`
+결과물: `dist\StartOfWorkSetup-1.3.0.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -71,7 +72,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.2.17.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.3.0.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -251,6 +252,14 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.3.0
+
+- 메인 GUI를 카드형 라운드 레이아웃으로 개편
+  - 상태 배너(아이콘·제목·부제·워터마크), 상태/설정 카드, 하단 안내 바
+  - Bootstrap Icons 적용, 자동 퇴근 토글 스위치
+  - 상태 행 정렬 버그(값 라벨이 한 칸씩 밀리던 문제) 수정
+- 산출물: `StartOfWorkSetup-1.3.0.exe`, `StartOfWork-1.3.0.zip`
 
 ### v1.2.17
 

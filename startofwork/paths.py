@@ -48,6 +48,24 @@ APP_ICON_FILE = resource_path("StartOfWork.ico")
 CONFIG_FILE = APP_DIR / "config.json"
 
 
+def package_asset(*parts: str) -> Path:
+    """패키지 내 정적 자산 경로 (개발·PyInstaller 공통)."""
+    relative = Path(*parts)
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bundled = Path(meipass) / relative
+            if bundled.exists():
+                return bundled
+        beside = Path(sys.executable).resolve().parent / relative
+        if beside.exists():
+            return beside
+    return _PACKAGE_DIR / relative
+
+
+ICONS_DIR = package_asset("assets", "icons")
+
+
 def prune_log_to_retention(
     path: Path,
     *,

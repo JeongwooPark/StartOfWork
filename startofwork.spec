@@ -80,6 +80,7 @@ a = Analysis(
     datas=[
         (str(icon_file), "."),
         (str(project_dir / "config.example.json"), "."),
+        (str(project_dir / "startofwork" / "assets" / "icons"), "assets/icons"),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],
