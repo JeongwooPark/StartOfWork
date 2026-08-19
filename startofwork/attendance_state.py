@@ -264,12 +264,12 @@ def record_failure(
         logging.exception("%s 실패 상태 저장 실패", action)
 
 
-def save_check_in_date(day: date) -> bool:
-    return record_success("check_in", day)
+def save_check_in_date(day: date, *, now: Optional[datetime] = None) -> bool:
+    return record_success("check_in", day, now=now)
 
 
-def save_check_out_date(day: date) -> bool:
-    return record_success("check_out", day)
+def save_check_out_date(day: date, *, now: Optional[datetime] = None) -> bool:
+    return record_success("check_out", day, now=now)
 
 
 def is_auth_failure_blocking(
@@ -329,6 +329,24 @@ def is_attempt_allowed(
         # 재시도 스케줄 없음 = 상한 도달 또는 auth
         return False
     return current >= next_at
+
+
+def is_retry_exhausted(
+    action: ActionKind, *, now: Optional[datetime] = None
+) -> bool:
+    """당일 실패 후 재시도 시각이 없으면 True (한도 소진). 인증 실패는 제외."""
+    current = now or datetime.now()
+    state = peek_check_in_state()
+    prefix = _prefix(action)
+    result = state.get(f"last_{prefix}_result")
+    if result not in ("failed", "unknown"):
+        return False
+    attempt = _parse_state_datetime(state.get(f"last_{prefix}_attempt"))
+    if attempt is None or attempt.date() != current.date():
+        return False
+    if is_auth_failure_blocking(action, today=current.date()):
+        return False
+    return _parse_state_datetime(state.get(f"next_{prefix}_retry_at")) is None
 
 
 def _non_workday_status_text(reason: str) -> str:

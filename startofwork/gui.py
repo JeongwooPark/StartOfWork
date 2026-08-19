@@ -23,11 +23,14 @@ from startofwork.attendance_state import (
     is_attempt_allowed,
     is_auth_failure_blocking,
     is_retry_due,
+    is_retry_exhausted,
+    load_last_check_in_date,
 )
 from startofwork.browser import (
     consume_checkout_rearm,
     is_checkout_job_running,
     open_attendance_page,
+    open_attendance_sync,
     open_checkout_page,
     verify_login_credentials,
 )
@@ -435,6 +438,7 @@ class LockStateMonitor(tk.Tk):
         # 업무시간 시작 시각 진입 감지용 (날짜당 1회)
         self._was_within_active_hours: Optional[bool] = None
         self._active_start_check_in_date: Optional[date] = None
+        self._exhausted_recheck_date: Optional[date] = None
         self._last_ui_lock_state: Optional[bool] = None
         self._last_ui_within_hours: Optional[bool] = None
         self._last_changed_label: Optional[str] = None
@@ -1974,6 +1978,17 @@ class LockStateMonitor(tk.Tk):
             return "로그인 실패 — 설정에서 계정을 확인하세요"
 
         if not is_attempt_allowed("check_in", now=now):
+            if (
+                is_retry_exhausted("check_in", now=now)
+                and load_last_check_in_date() != now.date()
+                and self._exhausted_recheck_date != now.date()
+            ):
+                logging.info("%s — 재시도 한도 소진, 서버 상태 확인 1회", trigger)
+                self._exhausted_recheck_date = now.date()
+                if open_attendance_sync():
+                    return f"{trigger} — 서버 근태 상태를 확인합니다"
+                self._exhausted_recheck_date = None
+                return "Chrome 실행 실패 — 로그 파일 확인 필요"
             logging.info("%s 출근 생략 — 재시도 대기 중", trigger)
             return "출근 재시도 대기 중"
 
@@ -2158,6 +2173,7 @@ class LockStateMonitor(tk.Tk):
         if self._last_monitor_date != today:
             self._last_monitor_date = today
             self._checkout_triggered_date = None
+            self._exhausted_recheck_date = None
             # 자정 경과 시 전일 완료 문구가 남지 않도록 요약·라벨을 강제 갱신
             self._check_in_status_text = ""
             self._check_out_status_text = ""
@@ -2288,6 +2304,7 @@ class LockStateMonitor(tk.Tk):
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("열기", self._tray_show, default=True),
+            pystray.MenuItem("근태 상태 확인", self._tray_sync_attendance),
             pystray.MenuItem("업데이트 확인", self._tray_check_update),
             pystray.MenuItem("종료", self._tray_quit),
         )
@@ -2316,6 +2333,20 @@ class LockStateMonitor(tk.Tk):
 
     def _tray_show(self, icon: Optional[pystray.Icon] = None, item=None) -> None:
         self.after(0, self._restore_from_tray)
+
+    def _tray_sync_attendance(self, icon: Optional[pystray.Icon] = None, item=None) -> None:
+        self.after(0, self._request_attendance_sync)
+
+    def _request_attendance_sync(self) -> None:
+        if not has_app_setup():
+            self._prompt_login_setup()
+            return
+        if open_attendance_sync():
+            logging.info("트레이 — 근태 상태 확인 시작")
+            if self._is_ui_visible():
+                self.message_label.configure(text="서버 근태 상태를 확인합니다")
+        elif self._is_ui_visible():
+            self.message_label.configure(text="근태 상태 확인 실패 — 로그를 확인하세요")
 
     def _tray_quit(self, icon: Optional[pystray.Icon] = None, item=None) -> None:
         self.after(0, self._quit_application)

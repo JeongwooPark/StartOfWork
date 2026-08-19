@@ -6,7 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, timedelta, time as dt_time
 from pathlib import Path
 from unittest import mock
 
@@ -959,8 +959,128 @@ class TestBrowserHelpers(unittest.TestCase):
                 self.assertTrue(
                     any(a.startswith("--user-data-dir=") and str(profile) in a for a in args)
                 )
+                self.assertIn("--headless=new", args)
+                self.assertIn("--remote-debugging-port=0", args)
                 self.assertTrue(profile.is_dir())
+
+                old = browser.create_chrome_options(
+                    Path("C:/fake/chrome.exe"), headless="old"
+                )
+                self.assertIn("--headless=old", old.arguments)
+                self.assertNotIn("--headless=new", old.arguments)
         self.assertEqual(CHROME_PROFILE_DIR.name, "chrome_profile")
+
+    def test_clear_stale_chrome_locks(self) -> None:
+        from startofwork import browser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp)
+            (profile / "DevToolsActivePort").write_text("9222", encoding="utf-8")
+            (profile / "SingletonLock").write_text("lock", encoding="utf-8")
+            (profile / "Cookies").write_text("keep", encoding="utf-8")
+            browser._clear_stale_chrome_locks(profile)
+            self.assertFalse((profile / "DevToolsActivePort").exists())
+            self.assertFalse((profile / "SingletonLock").exists())
+            self.assertTrue((profile / "Cookies").exists())
+
+    def test_headless_mode_order_prefers_old_when_locked(self) -> None:
+        from startofwork import browser
+
+        self.assertEqual(browser._headless_mode_order(True), ("old", "new"))
+        self.assertEqual(browser._headless_mode_order(None), ("old", "new"))
+        self.assertEqual(browser._headless_mode_order(False), ("new", "old"))
+
+    def test_create_driver_falls_back_to_old_headless(self) -> None:
+        from selenium.common.exceptions import SessionNotCreatedException
+        from startofwork import browser
+
+        calls: list[list[str]] = []
+
+        def fake_chrome(**kwargs):
+            args = list(kwargs["options"].arguments)
+            calls.append(args)
+            if any("--headless=new" in a for a in args):
+                raise SessionNotCreatedException(
+                    "session not created: Chrome failed to start: crashed"
+                )
+            return mock.Mock(name="driver")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "chrome_profile"
+            with mock.patch.object(browser, "CHROME_PROFILE_DIR", profile), mock.patch.object(
+                browser, "get_windows_lock_state", return_value=False
+            ), mock.patch.object(
+                browser, "_kill_chrome_using_profile", return_value=0
+            ), mock.patch.object(
+                browser, "ChromeService", return_value=mock.Mock()
+            ), mock.patch.object(
+                browser.webdriver, "Chrome", side_effect=fake_chrome
+            ):
+                driver = browser._create_driver(Path("C:/fake/chrome.exe"))
+
+        self.assertIsNotNone(driver)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--headless=new", calls[0])
+        self.assertIn("--headless=old", calls[1])
+
+    def test_create_driver_prefers_old_headless_when_locked(self) -> None:
+        from startofwork import browser
+
+        calls: list[list[str]] = []
+
+        def fake_chrome(**kwargs):
+            calls.append(list(kwargs["options"].arguments))
+            return mock.Mock(name="driver")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "chrome_profile"
+            with mock.patch.object(browser, "CHROME_PROFILE_DIR", profile), mock.patch.object(
+                browser, "get_windows_lock_state", return_value=True
+            ), mock.patch.object(
+                browser, "_kill_chrome_using_profile", return_value=0
+            ), mock.patch.object(
+                browser, "ChromeService", return_value=mock.Mock()
+            ), mock.patch.object(
+                browser.webdriver, "Chrome", side_effect=fake_chrome
+            ):
+                browser._create_driver(Path("C:/fake/chrome.exe"))
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--headless=old", calls[0])
+
+    def test_create_driver_falls_back_to_temp_profile(self) -> None:
+        from selenium.common.exceptions import SessionNotCreatedException
+        from startofwork import browser
+
+        crash = SessionNotCreatedException(
+            "session not created: DevToolsActivePort file doesn't exist"
+        )
+        calls: list[list[str]] = []
+
+        def fake_chrome(**kwargs):
+            args = list(kwargs["options"].arguments)
+            calls.append(args)
+            if any("startofwork_chrome_" in a for a in args):
+                return mock.Mock(name="driver")
+            raise crash
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "chrome_profile"
+            with mock.patch.object(browser, "CHROME_PROFILE_DIR", profile), mock.patch.object(
+                browser, "get_windows_lock_state", return_value=True
+            ), mock.patch.object(
+                browser, "_kill_chrome_using_profile", return_value=0
+            ), mock.patch.object(
+                browser, "ChromeService", return_value=mock.Mock()
+            ), mock.patch.object(
+                browser.webdriver, "Chrome", side_effect=fake_chrome
+            ):
+                driver = browser._create_driver(Path("C:/fake/chrome.exe"))
+                browser._close_browser(driver)
+
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertTrue(any("startofwork_chrome_" in a for a in calls[-1]))
+        self.assertFalse(browser._temp_chrome_profiles)
 
 
 class TestSingleInstance(unittest.TestCase):
@@ -1052,6 +1172,37 @@ class TestRetrySchedule(unittest.TestCase):
                     attendance_state.load_check_in_state().get(
                         "next_check_in_retry_at"
                     )
+                )
+                self.assertFalse(
+                    attendance_state.is_retry_exhausted("check_in", now=now)
+                )
+
+    def test_network_retry_exhausted(self) -> None:
+        from startofwork import attendance_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "check_in_state.json"
+            with mock.patch.object(
+                attendance_state, "CHECK_IN_STATE_FILE", state_file
+            ):
+                attendance_state.clear_check_in_state_cache()
+                t0 = datetime(2026, 8, 19, 8, 49, 0)
+                for index, minutes in enumerate((0, 2, 7, 17)):
+                    attendance_state.record_failure(
+                        "check_in",
+                        "network",
+                        f"timeout{index}",
+                        now=t0 + timedelta(minutes=minutes),
+                    )
+                later = datetime(2026, 8, 19, 9, 20, 0)
+                self.assertFalse(
+                    attendance_state.is_attempt_allowed("check_in", now=later)
+                )
+                self.assertFalse(
+                    attendance_state.is_retry_due("check_in", now=later)
+                )
+                self.assertTrue(
+                    attendance_state.is_retry_exhausted("check_in", now=later)
                 )
 
     def test_success_resets_retry(self) -> None:
@@ -1341,15 +1492,15 @@ class TestVerifyAndPeek(unittest.TestCase):
         ), mock.patch(
             "startofwork.browser.login_if_needed", return_value=True
         ), mock.patch(
-            "startofwork.browser.peek_attendance_ui_state",
-            return_value="checked_out",
+            "startofwork.browser.peek_attendance_snapshot",
+            return_value=("checked_out", {"out_time": "09:00:00", "in_time": "08:30:00"}),
         ), mock.patch(
-            "startofwork.browser.save_check_out_date"
-        ) as save, mock.patch(
+            "startofwork.browser.sync_local_attendance_from_server"
+        ) as sync, mock.patch(
             "startofwork.browser.click_check_out_button"
         ) as click:
             browser._auto_checkout_worker()
-            save.assert_called_once()
+            sync.assert_called_once()
             click.assert_not_called()
 
     def test_checkout_worker_skips_when_not_checked_in(self) -> None:
@@ -1365,19 +1516,91 @@ class TestVerifyAndPeek(unittest.TestCase):
         ), mock.patch(
             "startofwork.browser.login_if_needed", return_value=True
         ), mock.patch(
-            "startofwork.browser.peek_attendance_ui_state",
-            return_value="not_checked_in",
+            "startofwork.browser.peek_attendance_snapshot",
+            return_value=("not_checked_in", {}),
         ), mock.patch(
             "startofwork.browser.click_check_out_button"
         ) as click, mock.patch(
-            "startofwork.browser.save_check_out_date"
-        ) as save, mock.patch(
+            "startofwork.browser.sync_local_attendance_from_server"
+        ), mock.patch(
             "startofwork.browser.request_checkout_rearm"
         ) as rearm:
             browser._auto_checkout_worker()
             click.assert_not_called()
-            save.assert_not_called()
             rearm.assert_called_once()
+
+    def test_checkin_worker_syncs_when_already_checked_in(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+
+        def run_job(worker):
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=run_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value=True
+        ), mock.patch(
+            "startofwork.browser.peek_attendance_snapshot",
+            return_value=("checked_in", {"in_time": "09:05:00"}),
+        ), mock.patch(
+            "startofwork.browser.sync_local_attendance_from_server"
+        ) as sync, mock.patch(
+            "startofwork.browser.click_check_in_button"
+        ) as click:
+            browser._auto_login_worker()
+            sync.assert_called_once()
+            click.assert_not_called()
+
+    def test_sync_local_attendance_saves_server_times(self) -> None:
+        from startofwork import browser
+
+        day = date(2026, 8, 19)
+        with mock.patch(
+            "startofwork.browser.load_last_check_in_date", return_value=None
+        ), mock.patch(
+            "startofwork.browser.load_last_check_out_date", return_value=None
+        ), mock.patch(
+            "startofwork.browser.save_check_in_date"
+        ) as save_in, mock.patch(
+            "startofwork.browser.save_check_out_date"
+        ) as save_out:
+            browser.sync_local_attendance_from_server(
+                "checked_out",
+                {"in_time": "08:30:06", "out_time": "09:00:01"},
+                today=day,
+            )
+            save_in.assert_called_once()
+            save_out.assert_called_once()
+            self.assertEqual(
+                save_in.call_args.kwargs["now"],
+                datetime(2026, 8, 19, 8, 30, 6),
+            )
+            self.assertEqual(
+                save_out.call_args.kwargs["now"],
+                datetime(2026, 8, 19, 9, 0, 1),
+            )
+
+    def test_click_check_in_syncs_when_button_missing(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        with mock.patch(
+            "startofwork.browser.should_attempt_check_in", return_value=True
+        ), mock.patch(
+            "startofwork.browser._click_labeled_button", return_value=False
+        ), mock.patch(
+            "startofwork.browser.peek_attendance_snapshot",
+            return_value=("checked_in", {"in_time": "09:05:00"}),
+        ), mock.patch(
+            "startofwork.browser.sync_local_attendance_from_server"
+        ) as sync, mock.patch(
+            "startofwork.browser.record_failure"
+        ) as fail:
+            self.assertTrue(browser.click_check_in_button(driver))
+            sync.assert_called_once()
+            fail.assert_not_called()
 
 
 class TestImportsSmoke(unittest.TestCase):
@@ -1404,8 +1627,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.3.1")
-        self.assertEqual(startofwork.__version__, "1.3.1")
+        self.assertEqual(constants.APP_VERSION, "1.3.2")
+        self.assertEqual(startofwork.__version__, "1.3.2")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)

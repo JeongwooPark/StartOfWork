@@ -1,9 +1,9 @@
-# 출근 근태 자동 실행 (StartOfWork) v1.3.1
+# 출근 근태 자동 실행 (StartOfWork) v1.3.2
 
 Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로그램입니다.  
 잠금 해제뿐 아니라 **부팅/로그인 직후**에도 오늘 미출근이면 1회 출근을 시도합니다.
 
-**버전:** 1.3.1
+**버전:** 1.3.2
 
 > **배포 라인:** 1.1.3까지는 수동 배포(old) 라인입니다.  
 > **1.2.0부터** GitHub Releases 기반 **자동 업데이트**를 사용합니다.  
@@ -17,7 +17,8 @@ Windows에서 다우오피스 근태를 **자동 출근·퇴근**하는 프로�
 > **1.2.13부터** 업데이터는 `startofwork`(GUI/pystray)를 import하지 않습니다.  
 > **1.2.14부터** 비밀번호는 Windows Credential Manager에 저장하고, 출퇴근은 DOM/서버 검증 후에만 기록합니다.  
 > **1.2.15부터** Setup은 앱을 강제 종료 대기하지 않으며(`CloseApplications=no`), 자동 업데이트는 `/NOCLOSEAPPLICATIONS`로 실행합니다.  
-> **1.3.0부터** 메인 GUI를 카드형 라운드 레이아웃·Bootstrap Icons로 개편했습니다.
+> **1.3.0부터** 메인 GUI를 카드형 라운드 레이아웃·Bootstrap Icons로 개편했습니다.  
+> **1.3.2부터** 잠금 화면에서 Chrome 기동 실패를 폴백하고, 서버에 이미 처리된 출퇴근을 로컬에 동기화합니다.
 ## 주요 기능
 
 - **자동 출근**
@@ -52,7 +53,7 @@ uv sync
 .\build.ps1 -Installer
 ```
 
-결과물: `dist\StartOfWorkSetup-1.3.1.exe`
+결과물: `dist\StartOfWorkSetup-1.3.2.exe`
 
 | 항목 | 내용 |
 |------|------|
@@ -72,7 +73,7 @@ uv sync
 .\build.ps1
 ```
 
-결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.3.1.zip`.  
+결과물: `dist\StartOfWork\` + `dist\StartOfWorkUpdater\`, `dist\StartOfWork-1.3.2.zip`.  
 `config.json`은 `StartOfWork.exe`와 **같은 폴더**(`dist\StartOfWork\`)에 두면 됩니다.
 
 포터블로 시작프로그램만 등록하려면:
@@ -252,6 +253,17 @@ winget install JRSoftware.InnoSetup
 ```
 
 ## 패치 노트
+
+### v1.3.2
+
+- 화면 잠금 상태에서 headless Chrome이 기동 직후 크래시하던 문제 수정 (`DevToolsActivePort`)
+  - 잠금 시 `--headless=old` 우선, 실패 시 new/임시 프로필 폴백
+  - 전용 `chrome_profile` 잔여 프로세스·잠금 파일 정리
+- 다우오피스에서 수동 출근/퇴근한 상태를 로컬이 인식하지 못하던 문제 수정
+  - 출근 전 서버 UI peek 후 이미 처리됨이면 로컬만 동기화
+  - 재시도 한도 소진 후에도 부팅·잠금 해제 시 서버 상태 1회 확인
+  - 트레이 메뉴 **근태 상태 확인**
+- 산출물: `StartOfWorkSetup-1.3.2.exe`, `StartOfWork-1.3.2.zip`
 
 ### v1.3.1
 

@@ -5,14 +5,22 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, Optional
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    SessionNotCreatedException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
 import selenium.webdriver.chrome.webdriver  # noqa: F401
@@ -22,6 +30,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
 from startofwork.attendance_state import (
+    load_last_check_in_date,
     load_last_check_out_date,
     record_failure,
     save_check_in_date,
@@ -43,6 +52,7 @@ from startofwork.notifications import (
     notify_check_in_done,
     notify_check_out_done,
 )
+from startofwork.lock_state import get_windows_lock_state
 from startofwork.paths import CHROME_PROFILE_DIR
 from startofwork.rules import should_attempt_check_in, should_open_browser
 
@@ -60,6 +70,16 @@ _checkout_job_running = False
 _checkout_rearm_requested = False
 _cached_chrome: Optional[Path] = None
 _chrome_resolved = False
+_temp_chrome_profiles: list[Path] = []
+_CHROME_LOCK_FILES = (
+    "DevToolsActivePort",
+    "SingletonLock",
+    "SingletonSocket",
+    "SingletonCookie",
+    "lockfile",
+)
+HeadlessMode = Literal["new", "old"]
+_LOCK_UNSET = object()
 
 # text 기반 xpath 우선 — absolute 경로는 폴백
 CHECK_IN_BUTTON_XPATHS = (
@@ -148,33 +168,207 @@ def find_chrome_executable() -> Optional[Path]:
     return _cached_chrome
 
 
-def create_chrome_options(chrome: Path) -> ChromeOptions:
+def create_chrome_options(
+    chrome: Path,
+    *,
+    profile_dir: Optional[Path] = None,
+    headless: HeadlessMode = "new",
+) -> ChromeOptions:
     options = ChromeOptions()
     options.binary_location = str(chrome)
-    CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    options.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
-    options.add_argument("--headless=new")
+    target_profile = profile_dir if profile_dir is not None else CHROME_PROFILE_DIR
+    target_profile.mkdir(parents=True, exist_ok=True)
+    options.add_argument(f"--user-data-dir={target_profile}")
+    options.add_argument("--headless=old" if headless == "old" else "--headless=new")
     options.add_argument("--window-size=1400,900")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-extensions")
     options.add_argument("--disable-notifications")
     options.add_argument("--mute-audio")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--remote-debugging-port=0")
+    options.add_argument(
+        "--disable-features=VizDisplayCompositor,CalculateNativeWinOcclusion"
+    )
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
     return options
 
 
-def _close_browser(driver: Optional[webdriver.Chrome]) -> None:
-    if driver is None:
-        return
+def _webdriver_error_summary(exc: BaseException) -> str:
+    raw = str(exc).strip()
+    text = raw.splitlines()[0] if raw else exc.__class__.__name__
+    if len(text) > 240:
+        return text[:237] + "..."
+    return text
+
+
+def _is_chrome_start_failure(exc: BaseException) -> bool:
+    if isinstance(exc, SessionNotCreatedException):
+        return True
+    if not isinstance(exc, WebDriverException):
+        return False
+    msg = str(exc).lower()
+    needles = (
+        "session not created",
+        "devtoolsactiveport",
+        "chrome failed to start",
+        "chrome not reachable",
+        "unable to discover open pages",
+    )
+    return any(needle in msg for needle in needles)
+
+
+def _headless_mode_order(
+    locked: Optional[bool] | object = _LOCK_UNSET,
+) -> tuple[HeadlessMode, HeadlessMode]:
+    """잠긴 세션에서는 new headless가 GPU/컴포지터 크래시를 내는 경우가 많다."""
+    if locked is _LOCK_UNSET:
+        locked = get_windows_lock_state()
+    if locked is False:
+        return ("new", "old")
+    return ("old", "new")
+
+
+def _clear_stale_chrome_locks(profile_dir: Path) -> None:
+    for name in _CHROME_LOCK_FILES:
+        path = profile_dir / name
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                logging.info("Chrome 잔여 잠금 파일 삭제: %s", name)
+        except OSError:
+            logging.debug("Chrome 잠금 파일 삭제 실패: %s", path)
+
+
+def _kill_chrome_using_profile(profile_dir: Path) -> int:
+    """우리 chrome_profile을 쓰는 잔여 chrome.exe만 종료. 사용자 Chrome은 건드리지 않음."""
+    if sys.platform != "win32":
+        return 0
     try:
-        driver.quit()
-        logging.info("Chrome 창 종료 완료")
-    except Exception:
-        logging.exception("Chrome 창 종료 실패")
+        marker = str(profile_dir.resolve())
+    except OSError:
+        marker = str(profile_dir)
+    if not marker:
+        return 0
+    escaped = marker.replace("'", "''")
+    ps = (
+        f"$m = '{escaped}'; $n = 0; "
+        "$procs = Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe'\" "
+        "-ErrorAction SilentlyContinue; "
+        "foreach ($p in $procs) { "
+        "  if ($p.CommandLine -and "
+        "      ($p.CommandLine.IndexOf($m, [StringComparison]::OrdinalIgnoreCase) -ge 0)) { "
+        "    try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $n++ } "
+        "    catch {} "
+        "  } "
+        "}; Write-Output $n"
+    )
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+            creationflags=creationflags,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logging.warning("전용 프로필 Chrome 프로세스 정리 실패")
+        return 0
+    lines = (result.stdout or "").strip().splitlines()
+    killed = 0
+    if lines:
+        try:
+            killed = int(lines[-1])
+        except ValueError:
+            killed = 0
+    if killed:
+        logging.info("전용 프로필 Chrome 잔여 프로세스 종료: %s개", killed)
+        time.sleep(0.4)
+    return killed
+
+
+def _prepare_chrome_profile(profile_dir: Path) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _kill_chrome_using_profile(profile_dir)
+    _clear_stale_chrome_locks(profile_dir)
+
+
+def _cleanup_temp_chrome_profiles() -> None:
+    while _temp_chrome_profiles:
+        path = _temp_chrome_profiles.pop()
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _create_driver(chrome: Path) -> webdriver.Chrome:
+    profile = CHROME_PROFILE_DIR
+    _prepare_chrome_profile(profile)
+    locked = get_windows_lock_state()
+    modes = _headless_mode_order(locked)
+    logging.info(
+        "Chrome 세션 시작 — headless 순서=%s (잠금=%s)",
+        ",".join(modes),
+        locked,
+    )
+
+    last_exc: Optional[WebDriverException] = None
+    for index, headless in enumerate(modes):
+        if index > 0:
+            _prepare_chrome_profile(profile)
+        try:
+            driver = webdriver.Chrome(
+                service=ChromeService(),
+                options=create_chrome_options(chrome, headless=headless),
+            )
+            logging.info("Chrome 세션 생성 완료 (headless=%s)", headless)
+            return driver
+        except WebDriverException as exc:
+            last_exc = exc
+            if not _is_chrome_start_failure(exc):
+                raise
+            logging.warning(
+                "Chrome 기동 실패 (headless=%s): %s",
+                headless,
+                _webdriver_error_summary(exc),
+            )
+
+    temp_profile = Path(tempfile.mkdtemp(prefix="startofwork_chrome_"))
+    _temp_chrome_profiles.append(temp_profile)
+    logging.warning("전용 프로필 기동 실패 — 임시 프로필로 재시도: %s", temp_profile)
+    try:
+        driver = webdriver.Chrome(
+            service=ChromeService(),
+            options=create_chrome_options(
+                chrome, profile_dir=temp_profile, headless="old"
+            ),
+        )
+        logging.info("Chrome 세션 생성 완료 (headless=old, temp-profile)")
+        return driver
+    except WebDriverException:
+        _cleanup_temp_chrome_profiles()
+        if last_exc is not None:
+            raise last_exc
+        raise
+
+
+def _close_browser(driver: Optional[webdriver.Chrome]) -> None:
+    try:
+        if driver is not None:
+            try:
+                driver.quit()
+                logging.info("Chrome 창 종료 완료")
+            except Exception:
+                logging.exception("Chrome 창 종료 실패")
+            finally:
+                if driver in _active_drivers:
+                    _active_drivers.remove(driver)
     finally:
-        if driver in _active_drivers:
-            _active_drivers.remove(driver)
+        _cleanup_temp_chrome_profiles()
 
 
 def _set_input_value(driver: webdriver.Chrome, element, value: str) -> None:
@@ -536,9 +730,55 @@ def _ui_state_from_snapshot(snap: dict) -> AttendanceUiState:
 
 def peek_attendance_ui_state(driver: webdriver.Chrome) -> AttendanceUiState:
     """서버 UI 상태 판정: 기록된 시각 우선, 없으면 활성 버튼으로 판정."""
+    return peek_attendance_snapshot(driver)[0]
+
+
+def peek_attendance_snapshot(
+    driver: webdriver.Chrome,
+) -> tuple[AttendanceUiState, dict]:
     if not wait_for_attendance_url(driver):
-        return "unknown"
-    return _ui_state_from_snapshot(_read_attendance_snapshot(driver))
+        return "unknown", {}
+    snap = _read_attendance_snapshot(driver)
+    return _ui_state_from_snapshot(snap), snap
+
+
+def _clock_text_to_datetime(day: date, clock: Optional[str]) -> Optional[datetime]:
+    if not clock:
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(clock, fmt).time()
+        except ValueError:
+            continue
+        return datetime.combine(day, parsed)
+    return None
+
+
+def sync_local_attendance_from_server(
+    ui_state: AttendanceUiState,
+    snap: Optional[dict] = None,
+    *,
+    today: Optional[date] = None,
+) -> None:
+    """서버 UI에 이미 있는 출퇴근을 로컬 상태 파일에 맞춘다."""
+    day = today or date.today()
+    snapshot = snap or {}
+    in_at = _clock_text_to_datetime(day, snapshot.get("in_time"))
+    out_at = _clock_text_to_datetime(day, snapshot.get("out_time"))
+
+    if ui_state in ("checked_in", "checked_out"):
+        if load_last_check_in_date() != day:
+            save_check_in_date(day, now=in_at)
+            logging.info(
+                "서버에 이미 출근됨 — 로컬 상태 동기화%s",
+                f" time={snapshot.get('in_time')}" if snapshot.get("in_time") else "",
+            )
+    if ui_state == "checked_out" and load_last_check_out_date() != day:
+        save_check_out_date(day, now=out_at)
+        logging.info(
+            "서버에 이미 퇴근됨 — 로컬 상태 동기화%s",
+            f" time={snapshot.get('out_time')}" if snapshot.get("out_time") else "",
+        )
 
 
 def _check_in_verified(driver: webdriver.Chrome) -> bool:
@@ -660,6 +900,11 @@ def click_check_in_button(driver: webdriver.Chrome) -> bool:
     if not _click_labeled_button(
         driver, xpaths=CHECK_IN_BUTTON_XPATHS, label="출근하기"
     ):
+        ui_state, snap = peek_attendance_snapshot(driver)
+        sync_local_attendance_from_server(ui_state, snap, today=today)
+        if ui_state in ("checked_in", "checked_out"):
+            logging.info("출근하기 버튼 없음 — 서버에 이미 처리됨, 로컬 동기화")
+            return True
         record_failure(
             "check_in",
             "button_not_found",
@@ -875,10 +1120,7 @@ def _run_with_driver(worker) -> None:
     driver: Optional[webdriver.Chrome] = None
     try:
         attendance_url = load_attendance_url()
-        driver = webdriver.Chrome(
-            service=ChromeService(),
-            options=create_chrome_options(chrome),
-        )
+        driver = _create_driver(chrome)
         _active_drivers.append(driver)
         driver.get(attendance_url)
         worker(driver)
@@ -891,7 +1133,7 @@ def _run_with_driver(worker) -> None:
             record_failure(
                 action,
                 "network",
-                f"WebDriver: {exc}",
+                f"WebDriver: {_webdriver_error_summary(exc)}",
             )
             notify_attendance_failure(
                 title="근태 연결 실패",
@@ -917,6 +1159,12 @@ def _auto_login_worker(_chrome: Path | None = None) -> None:
                 message="아이디/비밀번호를 확인하세요. 자동 재시도를 중단합니다.",
             )
             return
+        ui_state, snap = peek_attendance_snapshot(driver)
+        logging.info("서버 근태 UI 상태: %s", ui_state)
+        sync_local_attendance_from_server(ui_state, snap)
+        if ui_state in ("checked_in", "checked_out"):
+            logging.info("서버에 오늘 출근이 이미 있음 — 출근하기 생략")
+            return
         logging.info("근태 화면 전환 대기 후 출근하기 진행")
         click_check_in_button(driver)
 
@@ -924,9 +1172,26 @@ def _auto_login_worker(_chrome: Path | None = None) -> None:
     _run_with_driver(_job)
 
 
+def _sync_attendance_worker(_chrome: Path | None = None) -> None:
+    """클릭 없이 서버 출퇴근만 읽어 로컬에 반영."""
+
+    def _job(driver: webdriver.Chrome) -> None:
+        if not login_if_needed(driver):
+            logging.warning("근태 상태 동기화 — 로그인 실패")
+            return
+        ui_state, snap = peek_attendance_snapshot(driver)
+        logging.info("근태 상태 동기화 — 서버 UI: %s", ui_state)
+        sync_local_attendance_from_server(ui_state, snap)
+        if ui_state == "not_checked_in":
+            logging.info("근태 상태 동기화 — 서버 미출근, 로컬 유지")
+        elif ui_state == "unknown":
+            logging.warning("근태 상태 동기화 — 서버 상태를 판별하지 못함")
+
+    _run_with_driver(_job)
+
+
 def _auto_checkout_worker(_chrome: Path | None = None) -> None:
     def _job(driver: webdriver.Chrome) -> None:
-        today = date.today()
         if not login_if_needed(driver):
             record_failure(
                 "check_out",
@@ -940,12 +1205,12 @@ def _auto_checkout_worker(_chrome: Path | None = None) -> None:
             return
 
         logging.info("근태 화면 전환 후 서버 상태 peek")
-        ui_state = peek_attendance_ui_state(driver)
+        ui_state, snap = peek_attendance_snapshot(driver)
         logging.info("서버 근태 UI 상태: %s", ui_state)
+        sync_local_attendance_from_server(ui_state, snap)
 
         if ui_state == "checked_out":
-            logging.info("서버에 이미 퇴근됨 — 로컬 상태 동기화")
-            save_check_out_date(today)
+            logging.info("서버에 이미 퇴근됨 — 퇴근하기 생략")
             return
         if ui_state == "not_checked_in":
             logging.info("서버 미출근 — 자동 퇴근 생략 (이후 재시도 허용)")
@@ -998,6 +1263,31 @@ def open_attendance_page() -> bool:
         daemon=True,
     ).start()
     logging.info("근태 페이지 자동 로그인 시작: %s", attendance_url)
+    return True
+
+
+def open_attendance_sync() -> bool:
+    """서버 근태 화면만 읽어 로컬 출퇴근 상태를 맞춘다. 버튼 클릭 없음."""
+    if not has_app_setup():
+        logging.warning("앱 설정 없음 — 근태 상태 동기화 생략")
+        return False
+
+    if find_chrome_executable() is None:
+        logging.error("Chrome 실행 파일을 찾을 수 없음")
+        return False
+
+    try:
+        attendance_url = load_attendance_url()
+    except Exception:
+        logging.exception("근태 URL 로드 실패")
+        return False
+
+    threading.Thread(
+        target=_sync_attendance_worker,
+        name="attendance-sync",
+        daemon=True,
+    ).start()
+    logging.info("근태 상태 동기화 시작: %s", attendance_url)
     return True
 
 
@@ -1073,10 +1363,7 @@ def verify_login_credentials(
 
     driver: Optional[webdriver.Chrome] = None
     try:
-        driver = webdriver.Chrome(
-            service=ChromeService(),
-            options=create_chrome_options(chrome),
-        )
+        driver = _create_driver(chrome)
         _active_drivers.append(driver)
         driver.get(target_url)
         if not login_if_needed(driver, username=username, password=password):
