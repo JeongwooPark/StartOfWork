@@ -2,7 +2,7 @@
 
 from datetime import time as dt_time
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 APP_TITLE = "출근 근태 자동 실행"
 # GitHub Releases 업데이트 (1.2.0+)
 GITHUB_REPO_OWNER = "JeongwooPark"
@@ -32,6 +32,9 @@ CHECK_OUT_BUTTON_XPATH = (
 )
 ATTENDANCE_PAGE_WAIT_SEC = 60
 CHECK_IN_RENDER_WAIT_SEC = 45
+# driver.get() 상한 — eager 전략과 함께 리소스 행을 끊고 폼 대기로 넘긴다
+PAGE_LOAD_TIMEOUT_SEC = 45
+LOGIN_FORM_WAIT_SEC = 45
 # config.json 기본값 (실제 값은 config에서 로드)
 DEFAULT_ACTIVE_START_TIME = dt_time(8, 30)
 DEFAULT_ACTIVE_END_TIME = dt_time(18, 0)

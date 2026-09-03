@@ -46,6 +46,8 @@ from startofwork.constants import (
     CHECK_IN_BUTTON_XPATH,
     CHECK_IN_RENDER_WAIT_SEC,
     CHECK_OUT_BUTTON_XPATH,
+    LOGIN_FORM_WAIT_SEC,
+    PAGE_LOAD_TIMEOUT_SEC,
 )
 from startofwork.notifications import (
     notify_attendance_failure,
@@ -59,10 +61,26 @@ from startofwork.rules import should_attempt_check_in, should_open_browser
 AttendanceUiState = Literal[
     "not_checked_in", "checked_in", "checked_out", "unknown"
 ]
+LoginOutcome = Literal["ok", "auth", "network"]
 
 VERIFY_WAIT_SEC = 15
 VERIFY_REFRESH_WAIT_SEC = 8
 CONFIRM_PROMPT_WAIT_SEC = 3.0
+LOGIN_FORM_RETRY_WAIT_SEC = 25
+
+PASSWORD_INPUT_SELECTORS = (
+    "input[type='password']",
+    "input[autocomplete='current-password']",
+    "input[name='password']",
+)
+USERNAME_INPUT_SELECTORS = (
+    "input.input_txt[type='text']",
+    "input[type='email']",
+    "input[autocomplete='username']",
+    "input[name='username']",
+    "input[name='id']",
+    "input[type='text']",
+)
 
 _active_drivers: list[webdriver.Chrome] = []
 _attendance_lock = threading.Lock()
@@ -80,6 +98,8 @@ _CHROME_LOCK_FILES = (
 )
 HeadlessMode = Literal["new", "old"]
 _LOCK_UNSET = object()
+
+HEADED_RESULT_HOLD_SEC = 4.0
 
 # text 기반 xpath 우선 — absolute 경로는 폴백
 CHECK_IN_BUTTON_XPATHS = (
@@ -172,14 +192,19 @@ def create_chrome_options(
     chrome: Path,
     *,
     profile_dir: Optional[Path] = None,
-    headless: HeadlessMode = "new",
+    headless: Optional[HeadlessMode] = "new",
 ) -> ChromeOptions:
     options = ChromeOptions()
     options.binary_location = str(chrome)
+    # complete 대기는 추적 스크립트 행에 막히기 쉽다. DOM 이후 폼을 직접 기다린다.
+    options.page_load_strategy = "eager"
     target_profile = profile_dir if profile_dir is not None else CHROME_PROFILE_DIR
     target_profile.mkdir(parents=True, exist_ok=True)
     options.add_argument(f"--user-data-dir={target_profile}")
-    options.add_argument("--headless=old" if headless == "old" else "--headless=new")
+    if headless == "old":
+        options.add_argument("--headless=old")
+    elif headless == "new":
+        options.add_argument("--headless=new")
     options.add_argument("--window-size=1400,900")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
@@ -305,9 +330,51 @@ def _cleanup_temp_chrome_profiles() -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _create_driver(chrome: Path) -> webdriver.Chrome:
+def is_attendance_job_running() -> bool:
+    return _attendance_lock.locked()
+
+
+def _create_driver(chrome: Path, *, headed: bool = False) -> webdriver.Chrome:
     profile = CHROME_PROFILE_DIR
     _prepare_chrome_profile(profile)
+    if headed:
+        logging.info("Chrome 세션 시작 — headed")
+        last_exc: Optional[WebDriverException] = None
+        try:
+            driver = webdriver.Chrome(
+                service=ChromeService(),
+                options=create_chrome_options(chrome, headless=None),
+            )
+            logging.info("Chrome 세션 생성 완료 (headed)")
+            return _configure_driver(driver)
+        except WebDriverException as exc:
+            last_exc = exc
+            if not _is_chrome_start_failure(exc):
+                raise
+            logging.warning(
+                "Chrome 기동 실패 (headed): %s",
+                _webdriver_error_summary(exc),
+            )
+        temp_profile = Path(tempfile.mkdtemp(prefix="startofwork_chrome_"))
+        _temp_chrome_profiles.append(temp_profile)
+        logging.warning(
+            "전용 프로필 기동 실패 — 임시 프로필로 재시도: %s", temp_profile
+        )
+        try:
+            driver = webdriver.Chrome(
+                service=ChromeService(),
+                options=create_chrome_options(
+                    chrome, profile_dir=temp_profile, headless=None
+                ),
+            )
+            logging.info("Chrome 세션 생성 완료 (headed, temp-profile)")
+            return _configure_driver(driver)
+        except WebDriverException:
+            _cleanup_temp_chrome_profiles()
+            if last_exc is not None:
+                raise last_exc
+            raise
+
     locked = get_windows_lock_state()
     modes = _headless_mode_order(locked)
     logging.info(
@@ -326,7 +393,7 @@ def _create_driver(chrome: Path) -> webdriver.Chrome:
                 options=create_chrome_options(chrome, headless=headless),
             )
             logging.info("Chrome 세션 생성 완료 (headless=%s)", headless)
-            return driver
+            return _configure_driver(driver)
         except WebDriverException as exc:
             last_exc = exc
             if not _is_chrome_start_failure(exc):
@@ -348,12 +415,31 @@ def _create_driver(chrome: Path) -> webdriver.Chrome:
             ),
         )
         logging.info("Chrome 세션 생성 완료 (headless=old, temp-profile)")
-        return driver
+        return _configure_driver(driver)
     except WebDriverException:
         _cleanup_temp_chrome_profiles()
         if last_exc is not None:
             raise last_exc
         raise
+
+
+def _configure_driver(driver: webdriver.Chrome) -> webdriver.Chrome:
+    try:
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SEC)
+    except Exception:
+        logging.debug("pageLoadTimeout 설정 실패", exc_info=True)
+    return driver
+
+
+def _goto_url(driver: webdriver.Chrome, url: str) -> None:
+    try:
+        driver.get(url)
+    except TimeoutException:
+        logging.warning(
+            "페이지 로드 타임아웃(%ss) — 현재 URL로 계속: %s",
+            PAGE_LOAD_TIMEOUT_SEC,
+            driver.current_url,
+        )
 
 
 def _close_browser(driver: Optional[webdriver.Chrome]) -> None:
@@ -400,6 +486,101 @@ def _find_visible(driver: webdriver.Chrome, css: str):
         except Exception:
             continue
     return None
+
+
+def _find_input(
+    driver: webdriver.Chrome,
+    selectors: tuple[str, ...],
+    *,
+    visible_only: bool = True,
+):
+    for css in selectors:
+        found = _find_visible(driver, css)
+        if found is not None:
+            return found
+    if visible_only:
+        return None
+    for css in selectors:
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, css)
+        except Exception:
+            continue
+        if elements:
+            return elements[0]
+    return None
+
+
+def _find_password_input(
+    driver: webdriver.Chrome, *, visible_only: bool = True
+):
+    return _find_input(
+        driver, PASSWORD_INPUT_SELECTORS, visible_only=visible_only
+    )
+
+
+def _find_username_input(
+    driver: webdriver.Chrome, *, visible_only: bool = True
+):
+    return _find_input(
+        driver, USERNAME_INPUT_SELECTORS, visible_only=visible_only
+    )
+
+
+def _is_attendance_url(driver: webdriver.Chrome) -> bool:
+    url = driver.current_url or ""
+    return "my-attendance-status" in url and "/login" not in url
+
+
+def _login_surface_ready(driver: webdriver.Chrome) -> bool:
+    if _find_password_input(driver, visible_only=False) is not None:
+        return True
+    return _is_attendance_url(driver)
+
+
+def _wait_for_login_surface(driver: webdriver.Chrome, timeout_sec: float) -> bool:
+    try:
+        WebDriverWait(driver, timeout_sec).until(_login_surface_ready)
+        return True
+    except TimeoutException:
+        return False
+
+
+def _log_login_page_debug(driver: webdriver.Chrome) -> None:
+    try:
+        url = driver.current_url or ""
+        title = ""
+        ready = ""
+        try:
+            title = (driver.title or "").strip()[:120]
+        except Exception:
+            title = "?"
+        try:
+            ready = str(driver.execute_script("return document.readyState") or "")
+        except Exception:
+            ready = "?"
+        n_input = 0
+        n_password = 0
+        n_iframe = 0
+        try:
+            n_input = len(driver.find_elements(By.CSS_SELECTOR, "input"))
+            n_password = len(
+                driver.find_elements(By.CSS_SELECTOR, "input[type='password']")
+            )
+            n_iframe = len(driver.find_elements(By.CSS_SELECTOR, "iframe, frame"))
+        except Exception:
+            pass
+        logging.warning(
+            "로그인 페이지 진단 — url=%s title=%s ready=%s "
+            "inputs=%s password=%s iframes=%s",
+            url,
+            title or "(empty)",
+            ready or "?",
+            n_input,
+            n_password,
+            n_iframe,
+        )
+    except Exception:
+        logging.exception("로그인 페이지 진단 로깅 중 오류")
 
 
 def _resolve_button(element):
@@ -892,9 +1073,15 @@ def _verify_after_click(
         return "unknown"
 
 
-def click_check_in_button(driver: webdriver.Chrome) -> bool:
+def click_check_in_button(
+    driver: webdriver.Chrome, *, force: bool = False
+) -> bool:
     today = date.today()
-    if not should_attempt_check_in(today):
+    if force:
+        if load_last_check_in_date() == today:
+            logging.info("오늘 이미 출근 처리됨 — 수동 출근 생략")
+            return False
+    elif not should_attempt_check_in(today):
         return False
 
     if not _click_labeled_button(
@@ -1000,37 +1187,54 @@ def login_if_needed(
     driver: webdriver.Chrome,
     username: Optional[str] = None,
     password: Optional[str] = None,
-) -> bool:
-    wait = WebDriverWait(driver, 30)
-    try:
-        wait.until(
-            lambda d: _find_visible(d, "input[type='password']") is not None
-            or (
-                "my-attendance-status" in d.current_url
-                and "/login" not in d.current_url
-            )
+) -> LoginOutcome:
+    """로그인 또는 기존 세션 확인.
+
+    Returns:
+        ok: 근태 화면 접근 가능
+        auth: 폼 제출 후 로그인 유지 — 자격증명 문제로 재시도 중단
+        network: 페이지/폼을 못 불러옴 — 재시도 대상
+    """
+    if not _wait_for_login_surface(driver, LOGIN_FORM_WAIT_SEC):
+        _log_login_page_debug(driver)
+        logging.warning(
+            "페이지 로딩 시간 초과: %s — 새로고침 후 재시도",
+            driver.current_url,
         )
-    except TimeoutException:
-        logging.warning("페이지 로딩 시간 초과: %s", driver.current_url)
-        return False
+        try:
+            driver.refresh()
+        except WebDriverException:
+            logging.warning("로그인 페이지 새로고침 실패")
+            return "network"
+        if not _wait_for_login_surface(driver, LOGIN_FORM_RETRY_WAIT_SEC):
+            _log_login_page_debug(driver)
+            logging.warning("페이지 로딩 시간 초과: %s", driver.current_url)
+            return "network"
 
     time.sleep(0.5)
     if (
-        "my-attendance-status" in driver.current_url
-        and "/login" not in driver.current_url
-        and _find_visible(driver, "input[type='password']") is None
+        _is_attendance_url(driver)
+        and _find_password_input(driver, visible_only=False) is None
     ):
         logging.info("이미 로그인된 세션 — 로그인 생략")
-        return True
+        return "ok"
 
-    password_input = _find_visible(driver, "input[type='password']")
-    username_input = _find_visible(driver, "input.input_txt[type='text']")
-    if username_input is None:
-        username_input = _find_visible(driver, "input[type='text']")
+    password_input = _find_password_input(driver, visible_only=True)
+    username_input = _find_username_input(driver, visible_only=True)
+    if password_input is None or username_input is None:
+        hidden_password = _find_password_input(driver, visible_only=False)
+        hidden_username = _find_username_input(driver, visible_only=False)
+        if hidden_password is not None and hidden_username is not None:
+            logging.warning(
+                "로그인 입력란이 숨김 상태 — headless 표시 폴백 사용"
+            )
+            password_input = hidden_password
+            username_input = hidden_username
 
     if password_input is None or username_input is None:
         logging.error("로그인 입력란을 찾지 못함 (url=%s)", driver.current_url)
-        return False
+        _log_login_page_debug(driver)
+        return "network"
 
     logging.info("로그인 폼 감지 — 계정 정보 입력 시작")
     if username is None or password is None:
@@ -1038,7 +1242,7 @@ def login_if_needed(
             username, password = load_login_credentials()
         except Exception:
             logging.exception("로그인 설정 로드 실패")
-            return False
+            return "auth"
 
     _set_input_value(driver, username_input, username)
     _set_input_value(driver, password_input, password)
@@ -1061,24 +1265,44 @@ def login_if_needed(
 
     if login_button is None:
         logging.error("로그인 버튼을 찾지 못함")
-        return False
+        _log_login_page_debug(driver)
+        return "network"
 
     login_button.click()
     logging.info("로그인 버튼 클릭")
 
     try:
         WebDriverWait(driver, ATTENDANCE_PAGE_WAIT_SEC).until(
-            lambda d: "/login" not in d.current_url
-            and _find_visible(d, "input[type='password']") is None
+            lambda d: "/login" not in (d.current_url or "")
+            and _find_password_input(d, visible_only=False) is None
         )
         logging.info("자동 로그인 성공: %s", driver.current_url)
-        return True
+        return "ok"
     except TimeoutException:
-        logging.warning(
-            "로그인 후 페이지 전환 확인 실패 (url=%s)",
-            driver.current_url,
+        url = driver.current_url or ""
+        _log_login_page_debug(driver)
+        logging.warning("로그인 후 페이지 전환 확인 실패 (url=%s)", url)
+        if "/login" in url:
+            return "auth"
+        return "network"
+
+
+def _record_login_failure(
+    action: Literal["check_in", "check_out"],
+    outcome: LoginOutcome,
+) -> None:
+    if outcome == "auth":
+        record_failure(action, "auth", "로그인에 실패했습니다")
+        notify_attendance_failure(
+            title="로그인 실패",
+            message="아이디/비밀번호를 확인하세요. 자동 재시도를 중단합니다.",
         )
-        return False
+        return
+    record_failure(action, "network", "로그인 페이지를 확인하지 못했습니다")
+    notify_attendance_failure(
+        title="로그인 페이지 오류",
+        message="근태 로그인 화면을 불러오지 못했습니다. 잠시 후 재시도합니다.",
+    )
 
 
 def wait_for_attendance_buttons(
@@ -1106,7 +1330,7 @@ def wait_for_attendance_buttons(
         return False
 
 
-def _run_with_driver(worker) -> None:
+def _run_with_driver(worker, *, headed: bool = False) -> None:
     if not _attendance_lock.acquire(blocking=False):
         logging.info("근태 작업 진행 중 — 생략")
         return
@@ -1120,10 +1344,12 @@ def _run_with_driver(worker) -> None:
     driver: Optional[webdriver.Chrome] = None
     try:
         attendance_url = load_attendance_url()
-        driver = _create_driver(chrome)
+        driver = _create_driver(chrome, headed=headed)
         _active_drivers.append(driver)
-        driver.get(attendance_url)
+        _goto_url(driver, attendance_url)
         worker(driver)
+        if headed:
+            time.sleep(HEADED_RESULT_HOLD_SEC)
     except ValueError:
         logging.exception("근태 URL/설정 로드 실패")
     except WebDriverException as exc:
@@ -1146,18 +1372,16 @@ def _run_with_driver(worker) -> None:
         _attendance_lock.release()
 
 
-def _auto_login_worker(_chrome: Path | None = None) -> None:
+def _auto_login_worker(
+    _chrome: Path | None = None,
+    *,
+    headed: bool = False,
+    force: bool = False,
+) -> None:
     def _job(driver: webdriver.Chrome) -> None:
-        if not login_if_needed(driver):
-            record_failure(
-                "check_in",
-                "auth",
-                "로그인에 실패했습니다",
-            )
-            notify_attendance_failure(
-                title="로그인 실패",
-                message="아이디/비밀번호를 확인하세요. 자동 재시도를 중단합니다.",
-            )
+        outcome = login_if_needed(driver)
+        if outcome != "ok":
+            _record_login_failure("check_in", outcome)
             return
         ui_state, snap = peek_attendance_snapshot(driver)
         logging.info("서버 근태 UI 상태: %s", ui_state)
@@ -1166,17 +1390,17 @@ def _auto_login_worker(_chrome: Path | None = None) -> None:
             logging.info("서버에 오늘 출근이 이미 있음 — 출근하기 생략")
             return
         logging.info("근태 화면 전환 대기 후 출근하기 진행")
-        click_check_in_button(driver)
+        click_check_in_button(driver, force=force)
 
     _job._attendance_action = "check_in"  # type: ignore[attr-defined]
-    _run_with_driver(_job)
+    _run_with_driver(_job, headed=headed)
 
 
 def _sync_attendance_worker(_chrome: Path | None = None) -> None:
     """클릭 없이 서버 출퇴근만 읽어 로컬에 반영."""
 
     def _job(driver: webdriver.Chrome) -> None:
-        if not login_if_needed(driver):
+        if login_if_needed(driver) != "ok":
             logging.warning("근태 상태 동기화 — 로그인 실패")
             return
         ui_state, snap = peek_attendance_snapshot(driver)
@@ -1192,16 +1416,9 @@ def _sync_attendance_worker(_chrome: Path | None = None) -> None:
 
 def _auto_checkout_worker(_chrome: Path | None = None) -> None:
     def _job(driver: webdriver.Chrome) -> None:
-        if not login_if_needed(driver):
-            record_failure(
-                "check_out",
-                "auth",
-                "로그인에 실패했습니다",
-            )
-            notify_attendance_failure(
-                title="로그인 실패",
-                message="아이디/비밀번호를 확인하세요. 자동 재시도를 중단합니다.",
-            )
+        outcome = login_if_needed(driver)
+        if outcome != "ok":
+            _record_login_failure("check_out", outcome)
             return
 
         logging.info("근태 화면 전환 후 서버 상태 peek")
@@ -1237,15 +1454,16 @@ def _auto_checkout_worker(_chrome: Path | None = None) -> None:
     _run_with_driver(_job)
 
 
-def open_attendance_page() -> bool:
+def open_attendance_page(*, headed: bool = False, force: bool = False) -> bool:
     if not has_app_setup():
         logging.warning("앱 설정 없음 — 웹창 실행 생략")
         return False
 
-    allowed, reason = should_open_browser()
-    if not allowed:
-        logging.info("웹창 실행 생략 — 사유: %s", reason)
-        return False
+    if not force:
+        allowed, reason = should_open_browser()
+        if not allowed:
+            logging.info("웹창 실행 생략 — 사유: %s", reason)
+            return False
 
     if find_chrome_executable() is None:
         logging.error("Chrome 실행 파일을 찾을 수 없음")
@@ -1259,10 +1477,15 @@ def open_attendance_page() -> bool:
 
     threading.Thread(
         target=_auto_login_worker,
+        kwargs={"headed": headed, "force": force},
         name="auto-login",
         daemon=True,
     ).start()
-    logging.info("근태 페이지 자동 로그인 시작: %s", attendance_url)
+    logging.info(
+        "근태 페이지 자동 로그인 시작%s: %s",
+        " (수동·창 표시)" if headed or force else "",
+        attendance_url,
+    )
     return True
 
 
@@ -1365,9 +1588,15 @@ def verify_login_credentials(
     try:
         driver = _create_driver(chrome)
         _active_drivers.append(driver)
-        driver.get(target_url)
-        if not login_if_needed(driver, username=username, password=password):
-            return False, "로그인에 실패했습니다. 아이디/비밀번호를 확인하세요."
+        _goto_url(driver, target_url)
+        outcome = login_if_needed(driver, username=username, password=password)
+        if outcome != "ok":
+            if outcome == "auth":
+                return False, "로그인에 실패했습니다. 아이디/비밀번호를 확인하세요."
+            return (
+                False,
+                "로그인 페이지를 불러오지 못했습니다. 네트워크를 확인한 뒤 다시 시도하세요.",
+            )
         if not wait_for_attendance_buttons(driver, attendance_url=target_url):
             return (
                 False,

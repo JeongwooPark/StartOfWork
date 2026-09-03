@@ -264,6 +264,24 @@ def record_failure(
         logging.exception("%s 실패 상태 저장 실패", action)
 
 
+def clear_action_failure(action: ActionKind) -> None:
+    """당일 실패 잠금(인증 중단·재시도 대기)을 해제한다. 성공 기록은 유지."""
+    prefix = _prefix(action)
+    payload = load_check_in_state()
+    result = payload.get(f"last_{prefix}_result")
+    if result not in ("failed", "unknown"):
+        return
+    payload[f"{prefix}_retry_count"] = 0
+    payload.pop(f"next_{prefix}_retry_at", None)
+    payload[f"last_{prefix}_error"] = ""
+    payload.pop(f"last_{prefix}_result", None)
+    try:
+        _write_check_in_state(payload)
+        logging.info("%s 실패 잠금 해제", action)
+    except Exception:
+        logging.exception("%s 실패 잠금 해제 실패", action)
+
+
 def save_check_in_date(day: date, *, now: Optional[datetime] = None) -> bool:
     return record_success("check_in", day, now=now)
 

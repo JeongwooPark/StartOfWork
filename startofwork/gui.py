@@ -16,6 +16,7 @@ import pystray
 from PIL import Image, ImageDraw, ImageTk
 
 from startofwork.attendance_state import (
+    clear_action_failure,
     get_check_in_status_text,
     get_check_out_status_text,
     get_monitor_attendance_snapshot,
@@ -28,6 +29,7 @@ from startofwork.attendance_state import (
 )
 from startofwork.browser import (
     consume_checkout_rearm,
+    is_attendance_job_running,
     is_checkout_job_running,
     open_attendance_page,
     open_attendance_sync,
@@ -35,6 +37,7 @@ from startofwork.browser import (
     verify_login_credentials,
 )
 from startofwork.config import (
+    ensure_app_config,
     has_app_setup,
     is_missing_attendance_url,
     is_missing_credentials,
@@ -42,6 +45,7 @@ from startofwork.config import (
     load_auto_checkout_settings,
     load_update_check_enabled,
     normalize_attendance_url,
+    normalize_credential,
     parse_hhmm,
     save_active_hours,
     save_app_setup,
@@ -459,6 +463,7 @@ class LockStateMonitor(tk.Tk):
         self.checkout_minute_var = tk.StringVar(value=f"{checkout_time.minute:02d}")
 
         self._configure_styles()
+        self._build_menubar()
         self._build_ui()
         self.after_idle(self._disable_maximize_button)
         set_notification_handler(self._dispatch_notification)
@@ -489,24 +494,41 @@ class LockStateMonitor(tk.Tk):
             logging.info("앱 설정 없음 — GUI에서 근태 URL·계정 입력 요청")
             self.after_idle(self._prompt_login_setup)
 
-    def _prompt_login_setup(self) -> None:
-        """최초 설정: ① 근태 URL → ② 아이디/비번 → 검증 후 저장."""
-        if has_app_setup():
-            return
-        if self._login_setup_dialog is not None and self._login_setup_dialog.winfo_exists():
+    def _prompt_login_setup(self, *, reconfigure: bool = False) -> None:
+        """최초 설정 또는 계정 재설정: ① 근태 URL → ② 아이디/비번 → 검증 후 저장."""
+        if (
+            self._login_setup_dialog is not None
+            and self._login_setup_dialog.winfo_exists()
+        ):
             self._login_setup_dialog.lift()
             self._login_setup_dialog.focus_force()
             return
+        if not reconfigure and has_app_setup():
+            return
+
+        existing_url = ""
+        existing_user = ""
+        try:
+            data = ensure_app_config()
+            existing_url = normalize_attendance_url(data.get("attendance_url", ""))
+            existing_user = normalize_credential(data.get("username", ""))
+        except Exception:
+            logging.exception("기존 계정 설정 로드 실패")
 
         self.deiconify()
         self.lift()
-        self.message_label.configure(
-            text="최초 설정 — 근태 페이지 주소와 로그인 정보를 입력하세요"
-        )
+        if reconfigure:
+            self.message_label.configure(
+                text="계정 다시 설정 — 아이디/비밀번호를 입력하세요"
+            )
+        else:
+            self.message_label.configure(
+                text="최초 설정 — 근태 페이지 주소와 로그인 정보를 입력하세요"
+            )
 
         dialog = tk.Toplevel(self)
         self._login_setup_dialog = dialog
-        dialog.title("최초 설정")
+        dialog.title("계정 다시 설정" if reconfigure else "최초 설정")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
@@ -540,7 +562,7 @@ class LockStateMonitor(tk.Tk):
         ttk.Label(step1, text="근태 URL", style="Info.TLabel").grid(
             row=1, column=0, sticky="w", pady=6, padx=(0, 12)
         )
-        url_var = tk.StringVar()
+        url_var = tk.StringVar(value=existing_url)
         url_entry = ttk.Entry(step1, textvariable=url_var, width=42)
         url_entry.grid(row=1, column=1, sticky="ew", pady=6)
 
@@ -565,7 +587,7 @@ class LockStateMonitor(tk.Tk):
         ttk.Label(step2, text="아이디", style="Info.TLabel").grid(
             row=1, column=0, sticky="w", pady=6, padx=(0, 12)
         )
-        username_var = tk.StringVar()
+        username_var = tk.StringVar(value=existing_user)
         username_entry = ttk.Entry(step2, textvariable=username_var, width=28)
         username_entry.grid(row=1, column=1, sticky="ew", pady=6)
 
@@ -715,12 +737,21 @@ class LockStateMonitor(tk.Tk):
                 return
 
             status_var.set(message)
-            self.message_label.configure(text="최초 설정이 저장되었습니다")
-            logging.info("GUI 최초 설정 완료")
+            saved_msg = (
+                "계정 설정이 저장되었습니다"
+                if reconfigure
+                else "최초 설정이 저장되었습니다"
+            )
+            self.message_label.configure(text=saved_msg)
+            logging.info("GUI 계정 설정 저장 완료 (reconfigure=%s)", reconfigure)
+            clear_action_failure("check_in")
+            clear_action_failure("check_out")
             dialog.grab_release()
             dialog.destroy()
             self._login_setup_dialog = None
             self._login_verifying = False
+            if reconfigure:
+                return
             self.after(300, self._minimize_to_tray)
             self.after(2000, self._try_startup_check_in)
 
@@ -732,10 +763,13 @@ class LockStateMonitor(tk.Tk):
             if self._login_verifying:
                 status_var.set("로그인 확인 중입니다. 잠시만 기다려 주세요.")
                 return
-            logging.info("최초 설정 취소 — 프로그램 종료")
             dialog.grab_release()
             dialog.destroy()
             self._login_setup_dialog = None
+            if reconfigure:
+                logging.info("계정 다시 설정 취소")
+                return
+            logging.info("최초 설정 취소 — 프로그램 종료")
             self._quit_application()
 
         dialog.protocol("WM_DELETE_WINDOW", _on_dialog_close)
@@ -748,7 +782,10 @@ class LockStateMonitor(tk.Tk):
 
         dialog.bind("<Return>", _on_return)
 
-        _show_step(1)
+        if reconfigure and existing_url:
+            _show_step(2)
+        else:
+            _show_step(1)
         dialog.update_idletasks()
         width = dialog.winfo_reqwidth()
         height = dialog.winfo_reqheight()
@@ -761,6 +798,45 @@ class LockStateMonitor(tk.Tk):
         dialog.geometry(f"+{x}+{y}")
 
         url_entry.focus_set()
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self)
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        settings_menu.add_command(
+            label="계정 다시 설정",
+            command=self._on_reconfigure_account,
+        )
+        menubar.add_cascade(label="설정", menu=settings_menu)
+        self.config(menu=menubar)
+
+    def _on_reconfigure_account(self) -> None:
+        if not self._is_ui_visible():
+            self._restore_from_tray()
+        self._prompt_login_setup(reconfigure=True)
+
+    def _on_manual_check_in(self) -> None:
+        if not has_app_setup():
+            self._prompt_login_setup()
+            return
+        if is_attendance_job_running():
+            logging.info("수동 출근 생략 — 근태 작업 진행 중")
+            if self._is_ui_visible():
+                self.message_label.configure(text="이미 근태 작업이 진행 중입니다")
+            return
+        if not self._is_ui_visible():
+            self._restore_from_tray()
+        clear_action_failure("check_in")
+        if open_attendance_page(headed=True, force=True):
+            logging.info("수동 출근 체크 시작 (Chrome 창 표시)")
+            self.message_label.configure(
+                text="수동 출근 체크 — Chrome 창에서 진행합니다"
+            )
+            return
+        if self._is_ui_visible():
+            self.message_label.configure(
+                text="수동 출근 체크 실패 — 로그를 확인하세요"
+            )
+
     def _apply_window_icon(self) -> None:
         """윈도우 창/작업표시줄 아이콘 설정"""
         if not APP_ICON_FILE.is_file():
@@ -1241,6 +1317,32 @@ class LockStateMonitor(tk.Tk):
         self.checkout_minute_var.trace_add(
             "write", lambda *_: self._schedule_checkout_settings_save()
         )
+
+        self._add_dashed_separator(settings_card)
+        action_row = tk.Frame(settings_card, background=_CARD_BG)
+        action_row.pack(fill="x", padx=14, pady=12)
+        action_row.columnconfigure(1, weight=1)
+        tk.Label(
+            action_row,
+            image=self._icon_photo("briefcase"),
+            background=_CARD_BG,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        tk.Label(
+            action_row,
+            text="실패 시 Chrome 창을 띄워 출근을 다시 시도합니다.",
+            font=("맑은 고딕", 9),
+            foreground=_TEXT_MUTED,
+            background=_CARD_BG,
+            anchor="w",
+            justify="left",
+            wraplength=280,
+        ).grid(row=0, column=1, sticky="ew")
+        self.manual_check_in_button = ttk.Button(
+            action_row,
+            text="수동 출근 체크",
+            command=self._on_manual_check_in,
+        )
+        self.manual_check_in_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         # --- 하단 안내 ---
         footer_panel = RoundedPanel(
@@ -2305,6 +2407,8 @@ class LockStateMonitor(tk.Tk):
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("열기", self._tray_show, default=True),
             pystray.MenuItem("근태 상태 확인", self._tray_sync_attendance),
+            pystray.MenuItem("수동 출근 체크", self._tray_manual_check_in),
+            pystray.MenuItem("계정 다시 설정", self._tray_reconfigure_account),
             pystray.MenuItem("업데이트 확인", self._tray_check_update),
             pystray.MenuItem("종료", self._tray_quit),
         )
@@ -2336,6 +2440,14 @@ class LockStateMonitor(tk.Tk):
 
     def _tray_sync_attendance(self, icon: Optional[pystray.Icon] = None, item=None) -> None:
         self.after(0, self._request_attendance_sync)
+
+    def _tray_manual_check_in(self, icon: Optional[pystray.Icon] = None, item=None) -> None:
+        self.after(0, self._on_manual_check_in)
+
+    def _tray_reconfigure_account(
+        self, icon: Optional[pystray.Icon] = None, item=None
+    ) -> None:
+        self.after(0, self._on_reconfigure_account)
 
     def _request_attendance_sync(self) -> None:
         if not has_app_setup():

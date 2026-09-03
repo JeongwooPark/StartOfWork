@@ -960,6 +960,7 @@ class TestBrowserHelpers(unittest.TestCase):
                     any(a.startswith("--user-data-dir=") and str(profile) in a for a in args)
                 )
                 self.assertIn("--headless=new", args)
+                self.assertEqual(options.page_load_strategy, "eager")
                 self.assertIn("--remote-debugging-port=0", args)
                 self.assertTrue(profile.is_dir())
 
@@ -968,6 +969,13 @@ class TestBrowserHelpers(unittest.TestCase):
                 )
                 self.assertIn("--headless=old", old.arguments)
                 self.assertNotIn("--headless=new", old.arguments)
+
+                headed = browser.create_chrome_options(
+                    Path("C:/fake/chrome.exe"), headless=None
+                )
+                self.assertFalse(
+                    any(a.startswith("--headless") for a in headed.arguments)
+                )
         self.assertEqual(CHROME_PROFILE_DIR.name, "chrome_profile")
 
     def test_clear_stale_chrome_locks(self) -> None:
@@ -1168,6 +1176,15 @@ class TestRetrySchedule(unittest.TestCase):
                 self.assertFalse(
                     attendance_state.is_attempt_allowed("check_in", now=now)
                 )
+                attendance_state.clear_action_failure("check_in")
+                self.assertFalse(
+                    attendance_state.is_auth_failure_blocking(
+                        "check_in", today=now.date()
+                    )
+                )
+                self.assertTrue(
+                    attendance_state.is_attempt_allowed("check_in", now=now)
+                )
                 self.assertIsNone(
                     attendance_state.load_check_in_state().get(
                         "next_check_in_retry_at"
@@ -1246,6 +1263,22 @@ class TestVerifyAndPeek(unittest.TestCase):
         ):
             self.assertTrue(browser.click_check_in_button(driver))
             save.assert_called_once()
+
+        with mock.patch(
+            "startofwork.browser.load_last_check_in_date", return_value=None
+        ), mock.patch(
+            "startofwork.browser.should_attempt_check_in"
+        ) as gated, mock.patch(
+            "startofwork.browser._click_labeled_button", return_value=True
+        ), mock.patch(
+            "startofwork.browser._verify_after_click", return_value="success"
+        ), mock.patch(
+            "startofwork.browser.save_check_in_date"
+        ), mock.patch(
+            "startofwork.browser.notify_check_in_done"
+        ):
+            self.assertTrue(browser.click_check_in_button(driver, force=True))
+            gated.assert_not_called()
 
         with mock.patch(
             "startofwork.browser.should_attempt_check_in", return_value=True
@@ -1490,7 +1523,7 @@ class TestVerifyAndPeek(unittest.TestCase):
         with mock.patch(
             "startofwork.browser._run_with_driver", side_effect=capture_job
         ), mock.patch(
-            "startofwork.browser.login_if_needed", return_value=True
+            "startofwork.browser.login_if_needed", return_value="ok"
         ), mock.patch(
             "startofwork.browser.peek_attendance_snapshot",
             return_value=("checked_out", {"out_time": "09:00:00", "in_time": "08:30:00"}),
@@ -1508,13 +1541,13 @@ class TestVerifyAndPeek(unittest.TestCase):
 
         driver = mock.Mock()
 
-        def run_job(worker):
+        def run_job(worker, **_kwargs):
             worker(driver)
 
         with mock.patch(
             "startofwork.browser._run_with_driver", side_effect=run_job
         ), mock.patch(
-            "startofwork.browser.login_if_needed", return_value=True
+            "startofwork.browser.login_if_needed", return_value="ok"
         ), mock.patch(
             "startofwork.browser.peek_attendance_snapshot",
             return_value=("not_checked_in", {}),
@@ -1534,13 +1567,13 @@ class TestVerifyAndPeek(unittest.TestCase):
 
         driver = mock.Mock()
 
-        def run_job(worker):
+        def run_job(worker, **_kwargs):
             worker(driver)
 
         with mock.patch(
             "startofwork.browser._run_with_driver", side_effect=run_job
         ), mock.patch(
-            "startofwork.browser.login_if_needed", return_value=True
+            "startofwork.browser.login_if_needed", return_value="ok"
         ), mock.patch(
             "startofwork.browser.peek_attendance_snapshot",
             return_value=("checked_in", {"in_time": "09:05:00"}),
@@ -1552,6 +1585,138 @@ class TestVerifyAndPeek(unittest.TestCase):
             browser._auto_login_worker()
             sync.assert_called_once()
             click.assert_not_called()
+
+    def test_checkin_worker_force_headed_clicks(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        captured = {}
+
+        def run_job(worker, *, headed=False, **_kwargs):
+            captured["headed"] = headed
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=run_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value="ok"
+        ), mock.patch(
+            "startofwork.browser.peek_attendance_snapshot",
+            return_value=("not_checked_in", {}),
+        ), mock.patch(
+            "startofwork.browser.sync_local_attendance_from_server"
+        ), mock.patch(
+            "startofwork.browser.click_check_in_button"
+        ) as click:
+            browser._auto_login_worker(headed=True, force=True)
+            self.assertTrue(captured.get("headed"))
+            click.assert_called_once()
+            self.assertTrue(click.call_args.kwargs.get("force"))
+
+    def test_open_attendance_page_force_skips_schedule_rules(self) -> None:
+        from startofwork import browser
+
+        with mock.patch(
+            "startofwork.browser.has_app_setup", return_value=True
+        ), mock.patch(
+            "startofwork.browser.should_open_browser",
+            return_value=(False, "활성 시간대 외"),
+        ) as rules, mock.patch(
+            "startofwork.browser.find_chrome_executable",
+            return_value=Path("C:/fake/chrome.exe"),
+        ), mock.patch(
+            "startofwork.browser.load_attendance_url",
+            return_value="https://example.com/attend",
+        ), mock.patch(
+            "startofwork.browser.threading.Thread"
+        ) as thread:
+            self.assertTrue(browser.open_attendance_page(headed=True, force=True))
+            rules.assert_not_called()
+            self.assertEqual(
+                thread.call_args.kwargs["kwargs"],
+                {"headed": True, "force": True},
+            )
+
+    def test_checkin_worker_login_timeout_is_network(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+
+        def run_job(worker, **_kwargs):
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=run_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value="network"
+        ), mock.patch(
+            "startofwork.browser.record_failure"
+        ) as fail, mock.patch(
+            "startofwork.browser.notify_attendance_failure"
+        ) as notify, mock.patch(
+            "startofwork.browser.click_check_in_button"
+        ) as click:
+            browser._auto_login_worker()
+            click.assert_not_called()
+            fail.assert_called_once()
+            self.assertEqual(fail.call_args.args[0], "check_in")
+            self.assertEqual(fail.call_args.args[1], "network")
+            notify.assert_called_once()
+            self.assertEqual(notify.call_args.kwargs["title"], "로그인 페이지 오류")
+
+    def test_checkin_worker_wrong_password_is_auth(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+
+        def run_job(worker, **_kwargs):
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=run_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value="auth"
+        ), mock.patch(
+            "startofwork.browser.record_failure"
+        ) as fail, mock.patch(
+            "startofwork.browser.notify_attendance_failure"
+        ), mock.patch(
+            "startofwork.browser.click_check_in_button"
+        ) as click:
+            browser._auto_login_worker()
+            click.assert_not_called()
+            fail.assert_called_once()
+            self.assertEqual(fail.call_args.args[1], "auth")
+
+    def test_login_if_needed_timeout_returns_network(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        driver.current_url = (
+            "https://smartplanning.daouoffice.com/login"
+            "?nextUrl=/ehr/app/attend/my-attendance-status"
+        )
+        driver.refresh = mock.Mock()
+
+        with mock.patch(
+            "startofwork.browser._wait_for_login_surface", return_value=False
+        ), mock.patch(
+            "startofwork.browser._log_login_page_debug"
+        ), mock.patch(
+            "startofwork.browser.time.sleep"
+        ):
+            self.assertEqual(browser.login_if_needed(driver), "network")
+            driver.refresh.assert_called_once()
+
+    def test_goto_url_continues_after_page_load_timeout(self) -> None:
+        from selenium.common.exceptions import TimeoutException
+        from startofwork import browser
+
+        driver = mock.Mock()
+        driver.current_url = "https://example.com/login"
+        driver.get.side_effect = TimeoutException("timed out")
+        browser._goto_url(driver, "https://example.com/login")
+        driver.get.assert_called_once()
 
     def test_sync_local_attendance_saves_server_times(self) -> None:
         from startofwork import browser
@@ -1627,8 +1792,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.3.2")
-        self.assertEqual(startofwork.__version__, "1.3.2")
+        self.assertEqual(constants.APP_VERSION, "1.3.3")
+        self.assertEqual(startofwork.__version__, "1.3.3")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)
@@ -1665,6 +1830,8 @@ class TestImportsSmoke(unittest.TestCase):
             try:
                 self.assertTrue(app.title().startswith("출근 근태 자동 실행"))
                 self.assertTrue(hasattr(app, "check_in_label"))
+                self.assertTrue(hasattr(app, "manual_check_in_button"))
+                self.assertIsNotNone(app.cget("menu"))
             finally:
                 app.destroy()
 
