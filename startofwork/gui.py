@@ -26,6 +26,7 @@ from startofwork.attendance_state import (
     is_retry_due,
     is_retry_exhausted,
     load_last_check_in_date,
+    load_last_check_out_date,
 )
 from startofwork.browser import (
     consume_checkout_rearm,
@@ -815,6 +816,11 @@ class LockStateMonitor(tk.Tk):
         self._prompt_login_setup(reconfigure=True)
 
     def _on_manual_check_in(self) -> None:
+        if load_last_check_in_date() == date.today():
+            logging.info("수동 출근 생략 — 오늘 이미 출근됨")
+            if self._is_ui_visible():
+                self.message_label.configure(text="오늘 이미 출근 처리되었습니다")
+            return
         if not has_app_setup():
             self._prompt_login_setup()
             return
@@ -831,10 +837,46 @@ class LockStateMonitor(tk.Tk):
             self.message_label.configure(
                 text="수동 출근 체크 — Chrome 창에서 진행합니다"
             )
+            self._refresh_manual_action_buttons()
             return
         if self._is_ui_visible():
             self.message_label.configure(
                 text="수동 출근 체크 실패 — 로그를 확인하세요"
+            )
+
+    def _on_manual_check_out(self) -> None:
+        today = date.today()
+        if load_last_check_out_date() == today:
+            logging.info("수동 퇴근 생략 — 오늘 이미 퇴근됨")
+            if self._is_ui_visible():
+                self.message_label.configure(text="오늘 이미 퇴근 처리되었습니다")
+            return
+        if load_last_check_in_date() != today:
+            logging.info("수동 퇴근 생략 — 오늘 출근 기록이 없음")
+            if self._is_ui_visible():
+                self.message_label.configure(text="출근이 완료된 뒤 퇴근할 수 있습니다")
+            return
+        if not has_app_setup():
+            self._prompt_login_setup()
+            return
+        if is_attendance_job_running() or is_checkout_job_running():
+            logging.info("수동 퇴근 생략 — 근태 작업 진행 중")
+            if self._is_ui_visible():
+                self.message_label.configure(text="이미 근태 작업이 진행 중입니다")
+            return
+        if not self._is_ui_visible():
+            self._restore_from_tray()
+        clear_action_failure("check_out")
+        if open_checkout_page(headed=True, force=True):
+            logging.info("수동 퇴근 체크 시작 (Chrome 창 표시)")
+            self.message_label.configure(
+                text="수동 퇴근 체크 — Chrome 창에서 진행합니다"
+            )
+            self._refresh_manual_action_buttons()
+            return
+        if self._is_ui_visible():
+            self.message_label.configure(
+                text="수동 퇴근 체크 실패 — 로그를 확인하세요"
             )
 
     def _apply_window_icon(self) -> None:
@@ -1012,8 +1054,10 @@ class LockStateMonitor(tk.Tk):
         value_style: str,
         initial: str = "-",
         icon_active: bool = True,
-    ) -> tuple[tk.Label, ttk.Label]:
-        """한 행에 아이콘·라벨·값을 같은 부모(row)에 배치해 정렬을 맞춘다."""
+        action_text: Optional[str] = None,
+        action_command=None,
+    ) -> tuple[tk.Label, ttk.Label, Optional[ttk.Button]]:
+        """한 행에 아이콘·라벨·값(·동작 버튼)을 같은 부모(row)에 배치한다."""
         row = tk.Frame(parent, background=_CARD_BG)
         row.pack(fill="x", padx=14, pady=10)
         row.columnconfigure(1, weight=1)
@@ -1034,9 +1078,17 @@ class LockStateMonitor(tk.Tk):
             anchor="w",
         ).grid(row=0, column=1, sticky="w")
 
-        value = ttk.Label(row, text=initial, style=value_style)
-        value.grid(row=0, column=2, sticky="e")
-        return icon, value
+        right = tk.Frame(row, background=_CARD_BG)
+        right.grid(row=0, column=2, sticky="e")
+        value = ttk.Label(right, text=initial, style=value_style)
+        value.pack(side="left")
+        button = None
+        if action_text and action_command is not None:
+            button = ttk.Button(
+                right, text=action_text, command=action_command
+            )
+            button.pack(side="left", padx=(8, 0))
+        return icon, value, button
 
     def _time_spin(
         self,
@@ -1127,7 +1179,7 @@ class LockStateMonitor(tk.Tk):
         status_panel.pack(fill="x", pady=(0, 12))
         status_card = status_panel.body
 
-        self._changed_icon, self.changed_label = self._status_row(
+        self._changed_icon, self.changed_label, _ = self._status_row(
             status_card,
             icon_kind="calendar",
             label="마지막 상태 변경",
@@ -1136,7 +1188,7 @@ class LockStateMonitor(tk.Tk):
         )
         self._add_dashed_separator(status_card)
 
-        self._holiday_icon, self.holiday_label = self._status_row(
+        self._holiday_icon, self.holiday_label, _ = self._status_row(
             status_card,
             icon_kind="holiday",
             label="공휴일 유무",
@@ -1145,22 +1197,30 @@ class LockStateMonitor(tk.Tk):
         )
         self._add_dashed_separator(status_card)
 
-        self._check_in_icon, self.check_in_label = self._status_row(
-            status_card,
-            icon_kind="briefcase",
-            label="출근체크",
-            value_style="CardValuePending.TLabel",
-            initial="확인 중",
+        self._check_in_icon, self.check_in_label, self.manual_check_in_button = (
+            self._status_row(
+                status_card,
+                icon_kind="briefcase",
+                label="출근체크",
+                value_style="CardValuePending.TLabel",
+                initial="확인 중",
+                action_text="수동 출근 체크",
+                action_command=self._on_manual_check_in,
+            )
         )
         self._add_dashed_separator(status_card)
 
-        self._check_out_icon, self.check_out_label = self._status_row(
-            status_card,
-            icon_kind="logout",
-            label="퇴근체크",
-            value_style="CardValuePending.TLabel",
-            initial="확인 중",
-            icon_active=False,
+        self._check_out_icon, self.check_out_label, self.manual_check_out_button = (
+            self._status_row(
+                status_card,
+                icon_kind="logout",
+                label="퇴근체크",
+                value_style="CardValuePending.TLabel",
+                initial="확인 중",
+                icon_active=False,
+                action_text="수동 퇴근 체크",
+                action_command=self._on_manual_check_out,
+            )
         )
 
         # --- 설정 카드 ---
@@ -1317,32 +1377,6 @@ class LockStateMonitor(tk.Tk):
         self.checkout_minute_var.trace_add(
             "write", lambda *_: self._schedule_checkout_settings_save()
         )
-
-        self._add_dashed_separator(settings_card)
-        action_row = tk.Frame(settings_card, background=_CARD_BG)
-        action_row.pack(fill="x", padx=14, pady=12)
-        action_row.columnconfigure(1, weight=1)
-        tk.Label(
-            action_row,
-            image=self._icon_photo("briefcase"),
-            background=_CARD_BG,
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        tk.Label(
-            action_row,
-            text="실패 시 Chrome 창을 띄워 출근을 다시 시도합니다.",
-            font=("맑은 고딕", 9),
-            foreground=_TEXT_MUTED,
-            background=_CARD_BG,
-            anchor="w",
-            justify="left",
-            wraplength=280,
-        ).grid(row=0, column=1, sticky="ew")
-        self.manual_check_in_button = ttk.Button(
-            action_row,
-            text="수동 출근 체크",
-            command=self._on_manual_check_in,
-        )
-        self.manual_check_in_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         # --- 하단 안내 ---
         footer_panel = RoundedPanel(
@@ -1590,6 +1624,7 @@ class LockStateMonitor(tk.Tk):
 
     def _apply_check_in_status(self, status: str) -> None:
         if status == self._check_in_status_text:
+            self._refresh_manual_action_buttons()
             return
         self._check_in_status_text = status
         if self._is_ui_visible():
@@ -1604,9 +1639,11 @@ class LockStateMonitor(tk.Tk):
             )
             self._refresh_banner_subtitle_if_idle()
         self._refresh_attendance_summary()
+        self._refresh_manual_action_buttons()
 
     def _apply_check_out_status(self, status: str) -> None:
         if status == self._check_out_status_text:
+            self._refresh_manual_action_buttons()
             return
         self._check_out_status_text = status
         if self._is_ui_visible():
@@ -1621,6 +1658,20 @@ class LockStateMonitor(tk.Tk):
             )
             self._refresh_banner_subtitle_if_idle()
         self._refresh_attendance_summary()
+        self._refresh_manual_action_buttons()
+
+    def _refresh_manual_action_buttons(self) -> None:
+        today = date.today()
+        checked_in = load_last_check_in_date() == today
+        checked_out = load_last_check_out_date() == today
+        in_btn = getattr(self, "manual_check_in_button", None)
+        out_btn = getattr(self, "manual_check_out_button", None)
+        if in_btn is not None:
+            in_btn.configure(state="disabled" if checked_in else "normal")
+        if out_btn is not None:
+            out_btn.configure(
+                state="normal" if (checked_in and not checked_out) else "disabled"
+            )
 
     def _refresh_attendance_summary(self, today: Optional[date] = None) -> None:
         """창 제목·트레이 툴팁용 출퇴근 요약 갱신 (퇴근 우선, 자정·공휴일 반영)."""
@@ -2261,6 +2312,7 @@ class LockStateMonitor(tk.Tk):
             "logout",
             active=self._check_out_status_text.startswith("완료"),
         )
+        self._refresh_manual_action_buttons()
         self._apply_window_title()
         self._apply_last_changed_label()
         self._set_state_display(
@@ -2408,6 +2460,7 @@ class LockStateMonitor(tk.Tk):
             pystray.MenuItem("열기", self._tray_show, default=True),
             pystray.MenuItem("근태 상태 확인", self._tray_sync_attendance),
             pystray.MenuItem("수동 출근 체크", self._tray_manual_check_in),
+            pystray.MenuItem("수동 퇴근 체크", self._tray_manual_check_out),
             pystray.MenuItem("계정 다시 설정", self._tray_reconfigure_account),
             pystray.MenuItem("업데이트 확인", self._tray_check_update),
             pystray.MenuItem("종료", self._tray_quit),
@@ -2443,6 +2496,11 @@ class LockStateMonitor(tk.Tk):
 
     def _tray_manual_check_in(self, icon: Optional[pystray.Icon] = None, item=None) -> None:
         self.after(0, self._on_manual_check_in)
+
+    def _tray_manual_check_out(
+        self, icon: Optional[pystray.Icon] = None, item=None
+    ) -> None:
+        self.after(0, self._on_manual_check_out)
 
     def _tray_reconfigure_account(
         self, icon: Optional[pystray.Icon] = None, item=None

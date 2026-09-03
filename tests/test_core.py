@@ -1516,7 +1516,7 @@ class TestVerifyAndPeek(unittest.TestCase):
         driver = mock.Mock()
         captured = {}
 
-        def capture_job(worker):
+        def capture_job(worker, **_kwargs):
             captured["worker"] = worker
             worker(driver)
 
@@ -1612,6 +1612,32 @@ class TestVerifyAndPeek(unittest.TestCase):
             self.assertTrue(captured.get("headed"))
             click.assert_called_once()
             self.assertTrue(click.call_args.kwargs.get("force"))
+
+    def test_checkout_worker_force_headed_clicks(self) -> None:
+        from startofwork import browser
+
+        driver = mock.Mock()
+        captured = {}
+
+        def run_job(worker, *, headed=False, **_kwargs):
+            captured["headed"] = headed
+            worker(driver)
+
+        with mock.patch(
+            "startofwork.browser._run_with_driver", side_effect=run_job
+        ), mock.patch(
+            "startofwork.browser.login_if_needed", return_value="ok"
+        ), mock.patch(
+            "startofwork.browser.peek_attendance_snapshot",
+            return_value=("checked_in", {"in_time": "09:05:00"}),
+        ), mock.patch(
+            "startofwork.browser.sync_local_attendance_from_server"
+        ), mock.patch(
+            "startofwork.browser.click_check_out_button"
+        ) as click:
+            browser._auto_checkout_worker(headed=True, force=True)
+            self.assertTrue(captured.get("headed"))
+            click.assert_called_once()
 
     def test_open_attendance_page_force_skips_schedule_rules(self) -> None:
         from startofwork import browser
@@ -1792,8 +1818,8 @@ class TestImportsSmoke(unittest.TestCase):
         self.assertTrue(hasattr(json_io, "atomic_write_json"))
         self.assertEqual(paths.APP_ICON_FILE.name, "StartOfWork.ico")
         self.assertEqual(constants.APP_TITLE, "출근 근태 자동 실행")
-        self.assertEqual(constants.APP_VERSION, "1.3.3")
-        self.assertEqual(startofwork.__version__, "1.3.3")
+        self.assertEqual(constants.APP_VERSION, "1.3.4")
+        self.assertEqual(startofwork.__version__, "1.3.4")
         # 모듈 참조 유지 (미사용 경고 방지)
         self.assertIsNotNone(browser)
         self.assertIsNotNone(config)
@@ -1831,7 +1857,21 @@ class TestImportsSmoke(unittest.TestCase):
                 self.assertTrue(app.title().startswith("출근 근태 자동 실행"))
                 self.assertTrue(hasattr(app, "check_in_label"))
                 self.assertTrue(hasattr(app, "manual_check_in_button"))
+                self.assertTrue(hasattr(app, "manual_check_out_button"))
                 self.assertIsNotNone(app.cget("menu"))
+                today = date.today()
+                with mock.patch(
+                    "startofwork.gui.load_last_check_in_date", return_value=today
+                ), mock.patch(
+                    "startofwork.gui.load_last_check_out_date", return_value=None
+                ):
+                    app._refresh_manual_action_buttons()
+                self.assertEqual(
+                    str(app.manual_check_in_button.cget("state")), "disabled"
+                )
+                self.assertEqual(
+                    str(app.manual_check_out_button.cget("state")), "normal"
+                )
             finally:
                 app.destroy()
 

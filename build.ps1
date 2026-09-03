@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$AppVersion = "1.3.3"
+$AppVersion = "1.3.4"
 $AppDirName = "StartOfWork"
 $UpdaterDirName = "StartOfWorkUpdater"
 $VersionedZipName = "StartOfWork-$AppVersion.zip"

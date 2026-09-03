@@ -1414,7 +1414,12 @@ def _sync_attendance_worker(_chrome: Path | None = None) -> None:
     _run_with_driver(_job)
 
 
-def _auto_checkout_worker(_chrome: Path | None = None) -> None:
+def _auto_checkout_worker(
+    _chrome: Path | None = None,
+    *,
+    headed: bool = False,
+    force: bool = False,
+) -> None:
     def _job(driver: webdriver.Chrome) -> None:
         outcome = login_if_needed(driver)
         if outcome != "ok":
@@ -1431,7 +1436,8 @@ def _auto_checkout_worker(_chrome: Path | None = None) -> None:
             return
         if ui_state == "not_checked_in":
             logging.info("서버 미출근 — 자동 퇴근 생략 (이후 재시도 허용)")
-            request_checkout_rearm()
+            if not force:
+                request_checkout_rearm()
             return
         if ui_state == "unknown":
             record_failure(
@@ -1451,7 +1457,7 @@ def _auto_checkout_worker(_chrome: Path | None = None) -> None:
         click_check_out_button(driver)
 
     _job._attendance_action = "check_out"  # type: ignore[attr-defined]
-    _run_with_driver(_job)
+    _run_with_driver(_job, headed=headed)
 
 
 def open_attendance_page(*, headed: bool = False, force: bool = False) -> bool:
@@ -1514,7 +1520,7 @@ def open_attendance_sync() -> bool:
     return True
 
 
-def open_checkout_page() -> bool:
+def open_checkout_page(*, headed: bool = False, force: bool = False) -> bool:
     global _checkout_job_running
 
     if not has_app_setup():
@@ -1540,12 +1546,16 @@ def open_checkout_page() -> bool:
     def _runner() -> None:
         global _checkout_job_running
         try:
-            _auto_checkout_worker()
+            _auto_checkout_worker(headed=headed, force=force)
         finally:
             _checkout_job_running = False
 
     threading.Thread(target=_runner, name="auto-checkout", daemon=True).start()
-    logging.info("자동 퇴근 시작: %s", attendance_url)
+    logging.info(
+        "자동 퇴근 시작%s: %s",
+        " (수동·창 표시)" if headed or force else "",
+        attendance_url,
+    )
     return True
 
 
